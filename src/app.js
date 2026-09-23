@@ -1,0 +1,72 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import compression from 'compression';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import swaggerUi from 'swagger-ui-express';
+import { env } from './config/env.js';
+import { correlationId } from './middleware/correlation-id.js';
+import { notFound, errorHandler } from './middleware/error.js';
+import authRoutes from './routes/auth.routes.js';
+import templateRoutes from './routes/templates.routes.js';
+import projectRoutes from './routes/projects.routes.js';
+import assetRoutes from './routes/assets.routes.js';
+import telemetryRoutes from './routes/telemetry.routes.js';
+import decisionRoutes from './routes/decisions.routes.js';
+import alarmRoutes from './routes/alarms.routes.js';
+import dashboardRoutes from './routes/dashboard.routes.js';
+import correlationRoutes from './routes/correlation.routes.js';
+import visionRoutes from './routes/vision.routes.js';
+import documentRoutes from './routes/documents.routes.js';
+import logbookRoutes from './routes/logbook.routes.js';
+import reportRoutes from './routes/reports.routes.js';
+import adminRoutes from './routes/admin.routes.js';
+import healthRoutes from './routes/health.routes.js';
+import deviceCommandRoutes from './routes/device-commands.routes.js';
+import configManagementRoutes from './routes/config-management.routes.js';
+import { openApiSpec } from './openapi.js';
+import { Notification } from './models/index.js';
+import { requireAuth } from './middleware/auth.js';
+import { asyncHandler } from './utils/async-handler.js';
+
+export function createApp() {
+  const app = express();
+  app.locals.emitEvent = () => {};
+  app.set('trust proxy', 1);
+  app.use(correlationId);
+  app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+  app.use(compression());
+  app.use(cors({ origin(origin, cb) { if (!origin || env.corsOrigins.includes(origin)) return cb(null, true); cb(new Error('CORS origin not allowed')); }, credentials: true }));
+  app.use(express.json({ limit: '2mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+  app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'));
+  app.use('/api/', rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
+
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
+  app.use('/api/v1', healthRoutes);
+  app.use('/api/v1/auth', authRoutes);
+  app.use('/api/v1', templateRoutes);
+  app.use('/api/v1', projectRoutes);
+  app.use('/api/v1', assetRoutes);
+  app.use('/api/v1', telemetryRoutes);
+  app.use('/api/v1', decisionRoutes);
+  app.use('/api/v1', alarmRoutes);
+  app.use('/api/v1', dashboardRoutes);
+  app.use('/api/v1', correlationRoutes);
+  app.use('/api/v1', visionRoutes);
+  app.use('/api/v1', documentRoutes);
+  app.use('/api/v1', logbookRoutes);
+  app.use('/api/v1', reportRoutes);
+  app.use('/api/v1', adminRoutes);
+  app.use('/api/v1', deviceCommandRoutes);
+  app.use('/api/v1', configManagementRoutes);
+  app.get('/api/v1/notifications', requireAuth, asyncHandler(async (req, res) => {
+    const rows = await Notification.find({ organizationId: req.auth.organizationId, recipient: req.auth.email }).sort({ createdAt: -1 }).limit(100).lean();
+    res.json(rows);
+  }));
+
+  app.use(notFound);
+  app.use(errorHandler);
+  return app;
+}

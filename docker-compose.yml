@@ -1,0 +1,24 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: geonexa-mongo
+    restart: unless-stopped
+    ports:
+      - "27018:27017"
+    volumes:
+      - geonexa_mongo_data:/data/db
+
+  mongo-express:
+    image: mongo-express:1.0.2
+    container_name: geonexa-mongo-express
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongo:27017/
+      ME_CONFIG_BASICAUTH: "false"
+    ports:
+      - "8081:8081"
+
+volumes:
+  geonexa_mongo_data:

@@ -1,0 +1,16 @@
+import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import multer from 'multer';
+import { Document } from '../models/index.js';
+import { requireAuth } from '../middleware/auth.js';
+import { asyncHandler } from '../utils/async-handler.js';
+import { ApiError } from '../utils/api-error.js';
+import { env } from '../config/env.js';
+const dir=path.resolve('uploads/documents');fs.mkdirSync(dir,{recursive:true});const upload=multer({dest:dir,limits:{fileSize:env.uploadMaxMb*1024*1024}});
+const router=Router();router.use(requireAuth);
+router.get('/projects/:projectId/documents',asyncHandler(async(req,res)=>res.json(await Document.find({projectId:req.params.projectId,organizationId:req.auth.organizationId}).sort({createdAt:-1}).lean())));
+router.post('/projects/:projectId/documents',upload.single('file'),asyncHandler(async(req,res)=>{if(!req.file)throw new ApiError(400,'file is required');const bytes=fs.readFileSync(req.file.path);const doc=await Document.create({organizationId:req.auth.organizationId,projectId:req.params.projectId,instrumentId:req.body.instrumentId||undefined,category:req.body.category||'GENERAL',title:req.body.title||req.file.originalname,filename:req.file.originalname,mimeType:req.file.mimetype,size:req.file.size,storagePath:req.file.path,hash:crypto.createHash('sha256').update(bytes).digest('hex'),uploadedBy:req.auth.userId});res.status(201).json(doc);}));
+router.get('/documents/:id/file',asyncHandler(async(req,res)=>{const d=await Document.findOne({_id:req.params.id,organizationId:req.auth.organizationId});if(!d||!d.storagePath||!fs.existsSync(d.storagePath))throw new ApiError(404,'Document not found');res.type(d.mimeType||'application/octet-stream').download(path.resolve(d.storagePath),d.filename);}));
+export default router;

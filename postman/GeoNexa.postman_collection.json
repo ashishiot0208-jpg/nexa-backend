@@ -1,0 +1,58 @@
+{
+  "info": {
+    "name": "GeoNexa Backend",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {"key":"baseUrl","value":"http://localhost:3000/api/v1"},
+    {"key":"token","value":""},
+    {"key":"projectId","value":""},
+    {"key":"deviceKey","value":"DEMO-GW-018-KEY"}
+  ],
+  "item": [
+    {
+      "name":"Authentication",
+      "item":[
+        {
+          "name":"Login admin",
+          "request":{
+            "method":"POST",
+            "header":[{"key":"Content-Type","value":"application/json"}],
+            "body":{"mode":"raw","raw":"{\n  \"email\": \"admin@geonexa.local\",\n  \"password\": \"Admin@123\"\n}"},
+            "url":"{{baseUrl}}/auth/login"
+          },
+          "event":[{"listen":"test","script":{"exec":["const j=pm.response.json();","pm.collectionVariables.set('token', j.token);"]}}]
+        }
+      ]
+    },
+    {
+      "name":"Projects",
+      "item":[
+        {
+          "name":"List projects",
+          "request":{"method":"GET","header":[{"key":"Authorization","value":"Bearer {{token}}"}],"url":"{{baseUrl}}/projects"},
+          "event":[{"listen":"test","script":{"exec":["const j=pm.response.json();","if (j.length) pm.collectionVariables.set('projectId', j[0].id);"]}}]
+        },
+        {"name":"Project overview","request":{"method":"GET","header":[{"key":"Authorization","value":"Bearer {{token}}"}],"url":"{{baseUrl}}/projects/{{projectId}}/overview"}},
+        {"name":"Latest state","request":{"method":"GET","header":[{"key":"Authorization","value":"Bearer {{token}}"}],"url":"{{baseUrl}}/projects/{{projectId}}/latest-state"}},
+        {"name":"Alarms","request":{"method":"GET","header":[{"key":"Authorization","value":"Bearer {{token}}"}],"url":"{{baseUrl}}/projects/{{projectId}}/alarms"}},
+        {"name":"Decisions","request":{"method":"GET","header":[{"key":"Authorization","value":"Bearer {{token}}"}],"url":"{{baseUrl}}/projects/{{projectId}}/decisions"}}
+      ]
+    },
+    {
+      "name":"Telemetry",
+      "item":[
+        {
+          "name":"Ingest NH-10 sample",
+          "request":{
+            "method":"POST",
+            "header":[{"key":"Content-Type","value":"application/json"},{"key":"x-device-key","value":"{{deviceKey}}"}],
+            "body":{"mode":"raw","raw":"{\n  \"deviceId\": \"GW-018\",\n  \"messageId\": \"POSTMAN-{{$timestamp}}\",\n  \"sampleTime\": \"{{$isoTimestamp}}\",\n  \"channels\": {\n    \"inc_x\": 9.4,\n    \"inc_y\": 6.4,\n    \"inc_temp\": 30.2,\n    \"pore_pressure\": 125.4,\n    \"rain_15m\": 8.2,\n    \"tilt_x\": 0.34,\n    \"tilt_y\": 0.16,\n    \"tilt_temp\": 30.0\n  },\n  \"health\": {\"batteryV\": 3.62, \"rssiDbm\": -77, \"network\": \"4G\"}\n}"},
+            "url":"{{baseUrl}}/telemetry/ingest"
+          }
+        },
+        {"name":"Processed history","request":{"method":"GET","header":[{"key":"Authorization","value":"Bearer {{token}}"}],"url":"{{baseUrl}}/projects/{{projectId}}/telemetry?mode=processed&limit=100"}}
+      ]
+    }
+  ]
+}

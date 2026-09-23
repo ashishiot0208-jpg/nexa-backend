@@ -1,0 +1,13 @@
+import { Router } from 'express';
+import bcrypt from 'bcryptjs';
+import { AuditEvent, OrganizationMember, ProjectMember, User } from '../models/index.js';
+import { requireAuth, requireOrgRole } from '../middleware/auth.js';
+import { asyncHandler } from '../utils/async-handler.js';
+import { ApiError } from '../utils/api-error.js';
+import { audit } from '../services/audit.service.js';
+const router=Router();router.use(requireAuth);
+router.get('/admin/users',requireOrgRole('ADMINISTRATOR'),asyncHandler(async(req,res)=>{const members=await OrganizationMember.find({organizationId:req.auth.organizationId}).populate('userId').lean();res.json(members.map(m=>({membershipId:m._id,role:m.organizationRole,status:m.status,user:m.userId})));}));
+router.post('/admin/users',requireOrgRole('ADMINISTRATOR'),asyncHandler(async(req,res)=>{if(await User.exists({email:String(req.body.email).toLowerCase()}))throw new ApiError(409,'User already exists');const user=await User.create({email:String(req.body.email).toLowerCase(),displayName:req.body.displayName,passwordHash:await bcrypt.hash(req.body.password||'ChangeMe@123',12),status:'ACTIVE'});const member=await OrganizationMember.create({organizationId:req.auth.organizationId,userId:user._id,organizationRole:req.body.organizationRole||'VIEWER',status:'ACTIVE'});await audit({req,action:'USER_CREATED',resourceType:'User',resourceId:user._id,newState:{email:user.email,role:member.organizationRole}});res.status(201).json({user,member});}));
+router.post('/admin/projects/:projectId/members',requireOrgRole('ADMINISTRATOR'),asyncHandler(async(req,res)=>{const m=await ProjectMember.findOneAndUpdate({projectId:req.params.projectId,userId:req.body.userId},{$set:{role:req.body.role||'VIEWER',status:'ACTIVE',permissionOverrides:req.body.permissionOverrides||[]}}, {upsert:true,new:true,setDefaultsOnInsert:true});await audit({req,projectId:req.params.projectId,action:'PROJECT_MEMBERSHIP_CHANGED',resourceType:'ProjectMember',resourceId:m._id,newState:m.toObject()});res.json(m);}));
+router.get('/admin/audit',requireOrgRole('ADMINISTRATOR'),asyncHandler(async(req,res)=>{const q={organizationId:req.auth.organizationId};if(req.query.projectId)q.projectId=req.query.projectId;if(req.query.action)q.action=req.query.action;res.json(await AuditEvent.find(q).sort({createdAt:-1}).limit(Math.min(Number(req.query.limit||200),1000)).lean());}));
+export default router;

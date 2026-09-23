@@ -1,0 +1,14 @@
+import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import { Report } from '../models/index.js';
+import { requireAuth } from '../middleware/auth.js';
+import { asyncHandler } from '../utils/async-handler.js';
+import { generateProjectSummary } from '../services/report.service.js';
+import { ApiError } from '../utils/api-error.js';
+const router=Router();router.use(requireAuth);
+router.get('/projects/:projectId/reports',asyncHandler(async(req,res)=>res.json(await Report.find({projectId:req.params.projectId,organizationId:req.auth.organizationId}).sort({createdAt:-1}).lean())));
+router.post('/projects/:projectId/reports',asyncHandler(async(req,res)=>{const r=await Report.create({organizationId:req.auth.organizationId,projectId:req.params.projectId,name:req.body.name||'Project Summary',reportType:req.body.reportType||'PROJECT_SUMMARY',periodStart:req.body.periodStart,periodEnd:req.body.periodEnd,status:'QUEUED',generatedBy:req.auth.userId});setImmediate(()=>generateProjectSummary(r._id));res.status(202).json(r);}));
+router.get('/reports/:id',asyncHandler(async(req,res)=>{const r=await Report.findOne({_id:req.params.id,organizationId:req.auth.organizationId}).lean();if(!r)throw new ApiError(404,'Report not found');res.json(r);}));
+router.get('/reports/:id/download',asyncHandler(async(req,res)=>{const r=await Report.findOne({_id:req.params.id,organizationId:req.auth.organizationId});if(!r||r.status!=='READY'||!r.storagePath||!fs.existsSync(r.storagePath))throw new ApiError(404,'Report file not ready');res.download(path.resolve(r.storagePath),r.filename);}));
+export default router;

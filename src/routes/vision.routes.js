@@ -1,0 +1,21 @@
+import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import multer from 'multer';
+import { CameraSource, MediaAsset } from '../models/index.js';
+import { requireAuth } from '../middleware/auth.js';
+import { asyncHandler } from '../utils/async-handler.js';
+import { ApiError } from '../utils/api-error.js';
+import { env } from '../config/env.js';
+
+const mediaDir=path.resolve('uploads/media'); fs.mkdirSync(mediaDir,{recursive:true});
+const upload=multer({dest:mediaDir,limits:{fileSize:env.uploadMaxMb*1024*1024}});
+const router=Router(); router.use(requireAuth);
+router.get('/cameras',asyncHandler(async(req,res)=>{const q={organizationId:req.auth.organizationId};if(req.query.projectId)q.projectId=req.query.projectId;res.json(await CameraSource.find(q).sort({name:1}).lean());}));
+router.post('/cameras',asyncHandler(async(req,res)=>res.status(201).json(await CameraSource.create({organizationId:req.auth.organizationId,projectId:req.body.projectId,siteId:req.body.siteId,zoneId:req.body.zoneId,name:req.body.name,sourceMode:req.body.sourceMode||'SNAPSHOT',sourceUrl:req.body.sourceUrl,credentialSecretRef:req.body.credentialSecretRef,expectedCaptureSec:req.body.expectedCaptureSec||900,timezone:req.body.timezone||'Asia/Kolkata',metadata:req.body.metadata||{}}))));
+router.get('/cameras/:id/snapshots',asyncHandler(async(req,res)=>{const q={cameraId:req.params.id};if(req.query.from||req.query.to)q.captureAt={...(req.query.from?{$gte:new Date(String(req.query.from))}:{}),...(req.query.to?{$lte:new Date(String(req.query.to))}:{})};res.json(await MediaAsset.find(q).sort({captureAt:-1}).limit(Math.min(Number(req.query.limit||100),500)).lean());}));
+router.post('/cameras/:id/snapshots',upload.single('file'),asyncHandler(async(req,res)=>{const camera=await CameraSource.findOne({_id:req.params.id,organizationId:req.auth.organizationId});if(!camera)throw new ApiError(404,'Camera not found');if(!req.file)throw new ApiError(400,'file is required');const bytes=fs.readFileSync(req.file.path);const hash=crypto.createHash('sha256').update(bytes).digest('hex');const asset=await MediaAsset.create({organizationId:camera.organizationId,projectId:camera.projectId,cameraId:camera._id,captureAt:req.body.captureAt?new Date(req.body.captureAt):new Date(),filename:req.file.originalname,mimeType:req.file.mimetype,size:req.file.size,storagePath:req.file.path,hash,source:'UPLOAD'});camera.lastImageAt=asset.captureAt;camera.healthState='ONLINE';await camera.save();res.status(201).json(asset);}));
+router.get('/media/:id/file',asyncHandler(async(req,res)=>{const a=await MediaAsset.findOne({_id:req.params.id,organizationId:req.auth.organizationId});if(!a||!a.storagePath||!fs.existsSync(a.storagePath))throw new ApiError(404,'Media file not found');res.type(a.mimeType||'application/octet-stream').sendFile(path.resolve(a.storagePath));}));
+router.post('/media/:id/annotations',asyncHandler(async(req,res)=>{const a=await MediaAsset.findOne({_id:req.params.id,organizationId:req.auth.organizationId});if(!a)throw new ApiError(404,'Media not found');a.annotations.push({geometry:req.body.geometry,text:req.body.text,authorId:req.auth.userId,createdAt:new Date()});await a.save();res.json(a);}));
+export default router;
