@@ -18,20 +18,44 @@ const router = Router({ mergeParams: true });
 router.use(requireAuth);
 
 router.get('/projects/:projectId/geospatial', requireProjectAccess, asyncHandler(async (req, res) => {
+  console.log('[GEO] 1 route entered');
+  const timer = setTimeout(() => {
+    console.error('[GEO] request exceeded 10 seconds');
+  }, 10000);
+
   const { projectId } = req.params;
 
   const project = await Project.findById(projectId).lean();
-  if (!project) throw new ApiError(404, 'Project not found');
+  if (!project) {
+    clearTimeout(timer);
+    throw new ApiError(404, 'Project not found');
+  }
+  console.log('[GEO] 2 project access confirmed');
 
-  const [sites, zones, layers, features, instruments, devices, cameras] = await Promise.all([
-    Site.find({ projectId }).sort({ level: 1, name: 1 }).lean(),
-    Zone.find({ projectId }).sort({ name: 1 }).lean(),
-    GeospatialLayer.find({ projectId }).sort({ createdAt: -1 }).lean(),
-    GeospatialFeature.find({ projectId }).lean(),
-    Instrument.find({ projectId, status: { $ne: 'DELETED' } }).sort({ code: 1 }).lean(),
-    Device.find({ projectId, status: { $ne: 'DELETED' } }).sort({ deviceId: 1 }).lean(),
-    CameraSource.find({ projectId }).sort({ name: 1 }).lean()
-  ]);
+  // Split Promise.all for diagnosis
+  const sites = await Site.find({ projectId }).sort({ level: 1, name: 1 }).lean();
+  console.log('[GEO] 3 sites loaded', sites.length);
+
+  const zones = await Zone.find({ projectId }).sort({ name: 1 }).lean();
+  console.log('[GEO] 4 zones loaded', zones.length);
+
+  const layers = await GeospatialLayer.find({ projectId }).sort({ createdAt: -1 }).lean();
+  console.log('[GEO] 5 layers loaded', layers.length);
+
+  const features = await GeospatialFeature.find({ projectId }).lean();
+  console.log('[GEO] 6 features loaded', features.length);
+
+  const instruments = await Instrument.find({ projectId, status: { $ne: 'DELETED' } }).sort({ code: 1 }).lean();
+  console.log('[GEO] 7 instruments loaded', instruments.length);
+
+  const devices = await Device.find({ projectId, status: { $ne: 'DELETED' } }).sort({ deviceId: 1 }).lean();
+  console.log('[GEO] 8 devices loaded', devices.length);
+
+  const cameras = await CameraSource.find({ projectId }).sort({ name: 1 }).lean();
+  console.log('[GEO] 9 cameras loaded', cameras.length);
+  
+  console.log('[GEO] 10 sending response');
+  clearTimeout(timer);
 
   res.json({
     project: {
