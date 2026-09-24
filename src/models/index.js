@@ -5,3 +5,4 @@ export * from './assets.js';
 export * from './telemetry.js';
 export * from './decision.js';
 export * from './advanced.js';
+export * from './geospatial.js';

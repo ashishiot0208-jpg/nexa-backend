@@ -25,6 +25,7 @@ import adminRoutes from './routes/admin.routes.js';
 import healthRoutes from './routes/health.routes.js';
 import deviceCommandRoutes from './routes/device-commands.routes.js';
 import configManagementRoutes from './routes/config-management.routes.js';
+import geospatialRoutes from './routes/geospatial.routes.js';
 import { openApiSpec } from './openapi.js';
 import { Notification } from './models/index.js';
 import { requireAuth } from './middleware/auth.js';
@@ -38,8 +39,8 @@ export function createApp() {
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(compression());
   app.use(cors({ origin(origin, cb) { if (!origin || env.corsOrigins.includes(origin)) return cb(null, true); cb(new Error('CORS origin not allowed')); }, credentials: true }));
-  app.use(express.json({ limit: '2mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
   app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'));
   app.use('/api/', rateLimit({ windowMs: 60_000, limit: 600, standardHeaders: 'draft-7', legacyHeaders: false }));
 
@@ -61,6 +62,7 @@ export function createApp() {
   app.use('/api/v1', adminRoutes);
   app.use('/api/v1', deviceCommandRoutes);
   app.use('/api/v1', configManagementRoutes);
+  app.use('/api/v1', geospatialRoutes);
   app.get('/api/v1/notifications', requireAuth, asyncHandler(async (req, res) => {
     const rows = await Notification.find({ organizationId: req.auth.organizationId, recipient: req.auth.email }).sort({ createdAt: -1 }).limit(100).lean();
     res.json(rows);
