@@ -14,7 +14,7 @@ router.get('/use-case-templates', asyncHandler(async (_req, res) => {
 
 router.get('/instrument-catalog', asyncHandler(async (_req, res) => {
   const rows = await InstrumentCatalog.find().sort({ category: 1, name: 1 }).lean();
-  res.json(rows.map((x) => ({ id: x._id, code: x.code, name: x.name, category: x.category, parameters: x.parameters, defaultVisualizations: x.defaultVisualizations })));
+  res.json(rows.map((x) => ({ id: x._id, code: x.code, name: x.name, category: x.category, parameters: x.parameters, defaultVisualizations: x.defaultVisualizations, defaultChannels: x.defaultChannels })));
 }));
 
 router.get('/configuration/:code', asyncHandler(async (req, res) => {
