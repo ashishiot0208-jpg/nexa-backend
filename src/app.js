@@ -22,6 +22,8 @@ import documentRoutes from './routes/documents.routes.js';
 import logbookRoutes from './routes/logbook.routes.js';
 import reportRoutes from './routes/reports.routes.js';
 import adminRoutes from './routes/admin.routes.js';
+import platformAdminAuthRoutes from './routes/platform-admin-auth.routes.js';
+import platformAdminOrganizationsRoutes from './routes/platform-admin-organizations.routes.js';
 import healthRoutes from './routes/health.routes.js';
 import deviceCommandRoutes from './routes/device-commands.routes.js';
 import configManagementRoutes from './routes/config-management.routes.js';
@@ -38,7 +40,7 @@ export function createApp() {
   app.use(correlationId);
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(compression());
-  app.use(cors({ origin(origin, cb) { if (!origin || env.corsOrigins.includes(origin)) return cb(null, true); cb(new Error('CORS origin not allowed')); }, credentials: true }));
+  app.use(cors({ origin: true, credentials: true }));
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
   app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'));
@@ -47,6 +49,8 @@ export function createApp() {
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
   app.use('/api/v1', healthRoutes);
   app.use('/api/v1/auth', authRoutes);
+  app.use('/api/v1/admin/auth', platformAdminAuthRoutes);
+  app.use('/api/v1/admin/organizations', platformAdminOrganizationsRoutes);
   app.use('/api/v1', templateRoutes);
   app.use('/api/v1', projectRoutes);
   app.use('/api/v1', assetRoutes);

@@ -23,4 +23,19 @@ router.post('/login', validate(loginSchema), asyncHandler(async (req, res) => {
 }));
 
 router.get('/me', requireAuth, asyncHandler(async (req, res) => res.json(req.auth)));
+
+const setupPasswordSchema = z.object({ token: z.string(), password: z.string().min(6) });
+router.post('/setup-password', validate(setupPasswordSchema), asyncHandler(async (req, res) => {
+  const user = await User.findOne({ setupToken: req.body.token, status: 'INVITED' });
+  if (!user || (user.setupTokenExpires && user.setupTokenExpires < new Date())) {
+    throw new ApiError(400, 'Invalid or expired setup token');
+  }
+  user.passwordHash = await bcrypt.hash(req.body.password, 12);
+  user.status = 'ACTIVE';
+  user.setupToken = undefined;
+  user.setupTokenExpires = undefined;
+  await user.save();
+  res.json({ message: 'Password setup successfully' });
+}));
+
 export default router;

@@ -5,7 +5,11 @@ const organizationSchema = new Schema({
   name: { type: String, required: true },
   code: { type: String, required: true, unique: true, uppercase: true },
   timezone: { type: String, default: 'Asia/Kolkata' },
-  status: { type: String, enum: ['ACTIVE', 'SUSPENDED'], default: 'ACTIVE' },
+  address: { type: String },
+  contactPerson: { type: String },
+  mobile: { type: String },
+  email: { type: String },
+  status: { type: String, enum: ['ACTIVE', 'SUSPENDED', 'INACTIVE'], default: 'ACTIVE' },
   metadata: { type: Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
 
@@ -15,7 +19,9 @@ const userSchema = new Schema({
   passwordHash: { type: String, required: true },
   status: { type: String, enum: ['INVITED', 'ACTIVE', 'SUSPENDED', 'DEACTIVATED'], default: 'ACTIVE' },
   lastActiveAt: Date,
-  identityProviderRef: String
+  identityProviderRef: String,
+  setupToken: String,
+  setupTokenExpires: Date
 }, { timestamps: true });
 
 const organizationMemberSchema = new Schema({

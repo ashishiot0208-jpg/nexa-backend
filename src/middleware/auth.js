@@ -1,13 +1,14 @@
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { ApiError } from '../utils/api-error.js';
+import mongoose from 'mongoose';
 import { OrganizationMember, ProjectMember, User } from '../models/index.js';
 
 export async function requireAuth(req, _res, next) {
   try {
     const header = req.headers.authorization || '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-    if (!token) throw new ApiError(401, 'Authentication required');
+    if (!token) throw new ApiError(401, 'AuthReq');
     const payload = jwt.verify(token, env.jwtSecret);
     const user = await User.findById(payload.sub).lean();
     if (!user || user.status !== 'ACTIVE') throw new ApiError(401, 'User is not active');
@@ -24,9 +25,29 @@ export async function requireAuth(req, _res, next) {
   }
 }
 
+export async function requirePlatformAdminAuth(req, _res, next) {
+  try {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!token) throw new ApiError(401, 'AuthReq');
+    const payload = jwt.verify(token, env.jwtSecret);
+    if (payload.accountType !== 'PLATFORM_ADMIN') throw new ApiError(403, 'Platform Admin access required');
+    const admin = await mongoose.model('PlatformAdmin').findById(payload.sub).lean();
+    if (!admin || admin.status !== 'ACTIVE') throw new ApiError(401, 'Admin account is not active');
+    req.adminAuth = {
+      adminId: admin._id.toString(),
+      email: admin.email,
+      name: admin.name
+    };
+    next();
+  } catch (err) {
+    next(err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError' ? new ApiError(401, 'Invalid or expired token') : err);
+  }
+}
+
 
 export async function ensureProjectAccess(req, projectId) {
-  if (!req.auth) throw new ApiError(401, 'Authentication required');
+  if (!req.auth) throw new ApiError(401, 'AuthReq');
   if (req.auth.organizationRole === 'ADMINISTRATOR') return 'ADMINISTRATOR';
   const membership = await ProjectMember.findOne({ projectId, userId: req.auth.userId, status: 'ACTIVE' }).lean();
   if (!membership) throw new ApiError(403, 'No access to this project');
