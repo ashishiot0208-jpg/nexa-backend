@@ -7,3 +7,5 @@ export * from './decision.js';
 export * from './advanced.js';
 export * from './geospatial.js';
 export * from './platform-admin.js';
+export * from './sensor.js';
+export * from './sensor-type.js';

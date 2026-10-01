@@ -24,6 +24,8 @@ import reportRoutes from './routes/reports.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import platformAdminAuthRoutes from './routes/platform-admin-auth.routes.js';
 import platformAdminOrganizationsRoutes from './routes/platform-admin-organizations.routes.js';
+import platformAdminSensorsRoutes from './routes/platform-admin-sensors.routes.js';
+import platformAdminSensorTypesRoutes from './routes/platform-admin-sensor-types.routes.js';
 import healthRoutes from './routes/health.routes.js';
 import deviceCommandRoutes from './routes/device-commands.routes.js';
 import configManagementRoutes from './routes/config-management.routes.js';
@@ -51,6 +53,8 @@ export function createApp() {
   app.use('/api/v1/auth', authRoutes);
   app.use('/api/v1/admin/auth', platformAdminAuthRoutes);
   app.use('/api/v1/admin/organizations', platformAdminOrganizationsRoutes);
+  app.use('/api/v1/admin/sensors', platformAdminSensorsRoutes);
+  app.use('/api/v1/admin/sensor-types', platformAdminSensorTypesRoutes);
   app.use('/api/v1', templateRoutes);
   app.use('/api/v1', projectRoutes);
   app.use('/api/v1', assetRoutes);
