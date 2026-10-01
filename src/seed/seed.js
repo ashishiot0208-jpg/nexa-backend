@@ -11,6 +11,14 @@ import { sha256 } from '../utils/crypto.js';
 import { processTelemetry } from '../services/telemetry.service.js';
 
 await connectDb();
+
+const existingOrgs = await Organization.countDocuments();
+if (existingOrgs > 0) {
+  console.log('Database already contains organizations. Skipping seed to protect existing data.');
+  await disconnectDb();
+  process.exit(0);
+}
+
 console.log('Connected to MongoDB. Clearing GeoNexa collections...');
 for (const Model of [AlarmEvent,Alarm,DecisionSnapshot,Notification,AuditEvent,LatestState,DerivedReading,RawReading,DeviceCommand,DeviceTelemetry,BacktestRun,CorrelationModel,MediaAsset,CameraSource,Document,LogbookEvent,Report,DashboardVersion,Dashboard,CalibrationVersion,BaselineVersion,SensorChannel,Instrument,Device,Zone,Site,ProjectMember,Project,RuleSet,DashboardTemplate,InstrumentCatalog,UseCaseTemplate,OrganizationMember,User,Organization]) await Model.deleteMany({});
 

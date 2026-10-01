@@ -151,4 +151,30 @@ router.patch('/:id/status', requirePlatformAdminAuth, validate(statusSchema), as
   res.json(org);
 }));
 
+router.post('/:id/resend-invite', requirePlatformAdminAuth, asyncHandler(async (req, res) => {
+  const org = await Organization.findById(req.params.id);
+  if (!org) throw new ApiError(404, 'Organization not found');
+
+  const user = await User.findOne({ email: org.email });
+  if (!user) throw new ApiError(404, 'Primary user not found for this organization');
+
+  if (user.status === 'ACTIVE') {
+    throw new ApiError(400, 'User is already active. Cannot resend invite.');
+  }
+
+  const setupToken = crypto.randomBytes(32).toString('hex');
+  user.setupToken = setupToken;
+  user.setupTokenExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await user.save();
+
+  await AdminAudit.create({
+    adminId: req.adminAuth.adminId,
+    action: 'ORGANIZATION_INVITE_RESENT',
+    targetType: 'Organization',
+    targetId: org._id
+  });
+
+  res.json({ setupToken, message: 'Invite generated successfully' });
+}));
+
 export default router;
