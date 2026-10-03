@@ -9,3 +9,7 @@ export * from './geospatial.js';
 export * from './platform-admin.js';
 export * from './sensor.js';
 export * from './sensor-type.js';
+export * from './device.js';
+export * from './device-type.js';
+export * from './gateway.js';
+export * from './gateway-type.js';
