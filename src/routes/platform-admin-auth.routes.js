@@ -2,7 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
-import { PlatformAdmin } from '../models/index.js';
+import { PlatformAdmin, AdminAudit } from '../models/index.js';
 import { env } from '../config/env.js';
 import { validate } from '../middleware/validate.js';
 import { requirePlatformAdminAuth } from '../middleware/auth.js';
@@ -20,6 +20,13 @@ router.post('/login', validate(loginSchema), asyncHandler(async (req, res) => {
   
   admin.lastLoginAt = new Date(); 
   await admin.save();
+  
+  await AdminAudit.create({
+    adminId: admin._id,
+    action: 'ADMIN_LOGIN',
+    targetType: 'PlatformAdmin',
+    targetId: admin._id
+  });
   
   const token = jwt.sign(
     { accountType: 'PLATFORM_ADMIN' }, 

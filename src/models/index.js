@@ -13,3 +13,4 @@ export * from './device.js';
 export * from './device-type.js';
 export * from './gateway.js';
 export * from './gateway-type.js';
+export * from './project-template.js';

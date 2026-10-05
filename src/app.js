@@ -30,6 +30,8 @@ import platformAdminDevicesRoutes from './routes/platform-admin-devices.routes.j
 import platformAdminDeviceTypesRoutes from './routes/platform-admin-device-types.routes.js';
 import platformAdminGatewaysRoutes from './routes/platform-admin-gateways.routes.js';
 import platformAdminGatewayTypesRoutes from './routes/platform-admin-gateway-types.routes.js';
+import platformAdminProjectTemplatesRoutes from './routes/platform-admin-project-templates.routes.js';
+import platformAdminAuditRoutes from './routes/platform-admin-audit.routes.js';
 import healthRoutes from './routes/health.routes.js';
 import deviceCommandRoutes from './routes/device-commands.routes.js';
 import configManagementRoutes from './routes/config-management.routes.js';
@@ -63,6 +65,8 @@ export function createApp() {
   app.use('/api/v1/admin/device-types', platformAdminDeviceTypesRoutes);
   app.use('/api/v1/admin/gateways', platformAdminGatewaysRoutes);
   app.use('/api/v1/admin/gateway-types', platformAdminGatewayTypesRoutes);
+  app.use('/api/v1/admin/project-templates', platformAdminProjectTemplatesRoutes);
+  app.use('/api/v1/admin/audit', platformAdminAuditRoutes);
   app.use('/api/v1', templateRoutes);
   app.use('/api/v1', projectRoutes);
   app.use('/api/v1', assetRoutes);
