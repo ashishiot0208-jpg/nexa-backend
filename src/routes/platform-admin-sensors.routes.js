@@ -11,9 +11,20 @@ const router = Router();
 const channelSchema = z.object({
   measurement: z.string().min(1),
   unit: z.string().min(1),
-  range: z.string().optional(),
-  resolution: z.string().optional(),
-  accuracy: z.string().optional()
+  range_min: z.number().nullable().optional(),
+  range_max: z.number().nullable().optional(),
+  resolution_value: z.number().min(0).nullable().optional(),
+  resolution_unit: z.string().nullable().optional(),
+  accuracy_value: z.number().min(0).nullable().optional(),
+  accuracy_unit: z.string().nullable().optional()
+}).refine(data => {
+  if (data.range_min != null && data.range_max != null) {
+    return data.range_min <= data.range_max;
+  }
+  return true;
+}, {
+  message: "range_min must be <= range_max",
+  path: ["range_min"]
 });
 
 const sensorSchema = z.object({

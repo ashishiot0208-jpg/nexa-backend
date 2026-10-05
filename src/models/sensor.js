@@ -10,9 +10,12 @@ export const Counter = mongoose.models.Counter || model('Counter', counterSchema
 const channelSchema = new Schema({
   measurement: { type: String, required: true },
   unit: { type: String, required: true },
-  range: String,
-  resolution: String,
-  accuracy: String
+  range_min: { type: Number, default: null },
+  range_max: { type: Number, default: null },
+  resolution_value: { type: Number, default: null },
+  resolution_unit: { type: String, default: null },
+  accuracy_value: { type: Number, default: null },
+  accuracy_unit: { type: String, default: null }
 }, { _id: false });
 
 const sensorSchema = new Schema({

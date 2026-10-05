@@ -5,8 +5,8 @@ const splitCsv = (value) => String(value || '').split(',').map((x) => x.trim()).
 export const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: Number(process.env.PORT || 3000),
-  // mongoUri: process.env.MONGODB_URI || 'mongodb://139.59.41.28:27017/geonexa',
-  mongoUri: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/geonexa',
+  mongoUri: process.env.MONGODB_URI || 'mongodb://139.59.41.28:27017/geonexa',
+  // mongoUri: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/geonexa',
   jwtSecret: process.env.JWT_SECRET || 'dev-only-change-this-secret',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '12h',
   corsOrigins: splitCsv(process.env.CORS_ORIGINS || 'http://localhost:4200'),
