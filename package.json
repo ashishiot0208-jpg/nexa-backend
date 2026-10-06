@@ -8,7 +8,8 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "seed": "node src/seed/seed.js",
-    "check": "node scripts/check-syntax.js"
+    "check": "node scripts/check-syntax.js",
+    "mongo:local": "node scripts/start-local-mongo.js"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -24,12 +25,15 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.18.1",
     "morgan": "^1.10.1",
+    "mqtt": "^5.14.1",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "pdfkit": "^0.17.2",
     "socket.io": "^4.8.1",
     "swagger-ui-express": "^5.0.1",
-    "zod": "^4.1.8",
-    "mqtt": "^5.14.1"
+    "zod": "^4.1.8"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.3.0"
   }
 }
