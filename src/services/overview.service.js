@@ -31,7 +31,7 @@ export async function getProjectOverview(projectId) {
   const latestByParam = {};
   for (const x of latest) if (!latestByParam[x.parameterCode]) latestByParam[x.parameterCode] = x;
   return {
-    project: { id: project._id, name: project.name, code: project.code, location: project.location, timezone: project.timezone, status: project.status, useCaseCode: project.useCaseCode, useCaseName: project.useCaseTemplateId?.name },
+    project: { id: project._id, name: project.name, code: project.code, location: project.location, timezone: project.timezone, status: project.status, useCaseCode: project.useCaseCode, useCaseName: project.templateName || project.useCaseTemplateId?.name || project.useCaseCode || 'General Monitoring' },
     status,
     counts: { instruments: instruments.length, devices: devices.length, onlineDevices: devices.filter((d) => d.status === 'ONLINE').length, openAlarms: alarms.length },
     latest: Object.values(latestByParam).map((x) => ({ parameterCode: x.parameterCode, value: x.value, unit: x.unit, quality: x.quality, observedAt: x.observedAt, severity: x.severity })),
