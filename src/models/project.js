@@ -9,8 +9,36 @@ const projectSchema = new Schema({
   location: String,
   timezone: { type: String, default: 'Asia/Kolkata' },
   status: { type: String, enum: ['DRAFT', 'ACTIVE', 'ARCHIVED'], default: 'ACTIVE' },
-  useCaseTemplateId: { type: Schema.Types.ObjectId, ref: 'UseCaseTemplate', required: true },
-  useCaseCode: { type: String, required: true },
+  templateId: { type: Schema.Types.ObjectId, ref: 'ProjectTemplate' },
+  templateUid: String,
+  templateName: String,
+  plannedConfiguration: {
+    sensors: [{
+      sensor_uid: { type: String, required: true },
+      quantity: { type: Number, required: true, min: 1 },
+      name: String,
+      model: String,
+      signal_type: String
+    }],
+    devices: [{
+      device_uid: { type: String, required: true },
+      quantity: { type: Number, required: true, min: 1 },
+      name: String,
+      model: String,
+      communication: String,
+      supported_signal_types: [String]
+    }],
+    gateways: [{
+      gateway_uid: { type: String, required: true },
+      quantity: { type: Number, required: true, min: 1 },
+      name: String,
+      model: String,
+      supported_device_communications: [String],
+      backhaul: [String]
+    }]
+  },
+  useCaseTemplateId: { type: Schema.Types.ObjectId, ref: 'UseCaseTemplate', required: false },
+  useCaseCode: { type: String, required: false },
   dashboardTemplateId: { type: Schema.Types.ObjectId, ref: 'DashboardTemplate' },
   ruleSetId: { type: Schema.Types.ObjectId, ref: 'RuleSet' },
   correlations: { type: [String], default: [] },
