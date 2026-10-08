@@ -46,6 +46,7 @@ export function createApp() {
   const app = express();
   app.locals.emitEvent = () => {};
   app.set('trust proxy', 1);
+  app.set('etag', false);
   app.use(correlationId);
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(compression());

@@ -84,7 +84,7 @@ router.get('/projects', asyncHandler(async (req, res) => {
     const summary = summaries.get(p._id.toString()) || {};
     const useCaseName = p.templateName || ptMap.get(p.templateId?.toString())?.name || uc.get(p.useCaseTemplateId?.toString())?.name || p.useCaseCode || 'General Monitoring';
     return {
-      id: p._id, name: p.name, code: p.code, clientName: p.clientName || '', location: p.location, timezone: p.timezone, status: p.status, createdAt: p.createdAt,
+      id: p._id, name: p.name, code: p.code, clientName: p.clientName || '', location: p.location, timezone: p.timezone, status: p.status, setupStatus: p.setupStatus || null, createdAt: p.createdAt,
       useCaseCode: p.useCaseCode || 'GENERAL', useCaseName,
       templateId: p.templateId,
       templateUid: p.templateUid,
@@ -151,7 +151,8 @@ router.post('/projects', validate(createProjectSchema), asyncHandler(async (req,
     dashboardTemplateId: body.dashboardTemplateId || undefined,
     ruleSetId: body.ruleSetId || undefined,
     correlations: body.correlations || [],
-    status: 'ACTIVE'
+    status: 'ACTIVE',
+    setupStatus: 'SETUP_REQUIRED'
   });
   await ProjectMember.create({ projectId: project._id, userId: req.auth.userId, role: req.auth.organizationRole === 'ADMINISTRATOR' ? 'ADMINISTRATOR' : 'ENGINEER', status: 'ACTIVE' });
 
@@ -210,6 +211,7 @@ router.get('/projects/:projectId', requireProjectAccess, asyncHandler(async (req
     location: project.location,
     timezone: project.timezone,
     status: project.status,
+    setupStatus: project.setupStatus || null,
     template_id: project.templateId?._id || project.templateId,
     template_uid: project.templateUid,
     template_name: project.templateName || project.templateId?.name,
@@ -235,7 +237,7 @@ router.get('/projects/:projectId/overview', requireProjectAccess, asyncHandler(a
 router.patch('/projects/:projectId', requireProjectAccess, asyncHandler(async (req, res) => {
   const project = await Project.findById(req.params.projectId); if (!project) throw new ApiError(404, 'Project not found');
   const before = project.toObject();
-  for (const key of ['name', 'clientName', 'location', 'timezone', 'status', 'metadata']) if (req.body[key] !== undefined) project[key] = req.body[key];
+  for (const key of ['name', 'clientName', 'location', 'timezone', 'status', 'setupStatus', 'metadata']) if (req.body[key] !== undefined) project[key] = req.body[key];
   await project.save(); await audit({ req, organizationId: project.organizationId, projectId: project._id, action: 'PROJECT_UPDATED', resourceType: 'Project', resourceId: project._id, previousState: before, newState: project.toObject() });
   res.json(project);
 }));

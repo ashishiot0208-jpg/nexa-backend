@@ -9,6 +9,7 @@ const projectSchema = new Schema({
   location: String,
   timezone: { type: String, default: 'Asia/Kolkata' },
   status: { type: String, enum: ['DRAFT', 'ACTIVE', 'ARCHIVED'], default: 'ACTIVE' },
+  setupStatus: { type: String, enum: ['SETUP_REQUIRED', 'COMMISSIONING', 'COMMISSIONED'] },
   templateId: { type: Schema.Types.ObjectId, ref: 'ProjectTemplate' },
   templateUid: String,
   templateName: String,

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { BaselineVersion, CalibrationVersion, Device, Instrument, InstrumentCatalog, SensorChannel } from '../models/index.js';
+import { BaselineVersion, CalibrationVersion, Device, Instrument, InstrumentCatalog, SensorChannel, Project, Sensor, SensorDeviceMapping } from '../models/index.js';
 import { requireAuth, requireProjectAccess, ensureProjectAccess } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
@@ -10,8 +10,46 @@ import { randomToken, sha256 } from '../utils/crypto.js';
 const router = Router(); router.use(requireAuth);
 
 router.get('/projects/:projectId/instruments', requireProjectAccess, asyncHandler(async (req, res) => {
-  const rows = await Instrument.find({ projectId: req.params.projectId }).sort({ name: 1 }).lean();
-  const withChannels = await Promise.all(rows.map(async (x) => ({ ...x, channels: await SensorChannel.find({ instrumentId: x._id }).lean() })));
+  const { projectId } = req.params;
+  const rows = await Instrument.find({ projectId }).sort({ code: 1, name: 1 }).lean();
+  
+  const sensorUids = [...new Set(rows.map(x => x.sensor_uid || x.catalogCode).filter(Boolean))];
+  const [catalogues, legacyCatalogues, activeMappings] = await Promise.all([
+    Sensor.find({ uid: { $in: sensorUids } }).lean(),
+    InstrumentCatalog.find({ code: { $in: sensorUids } }).lean(),
+    SensorDeviceMapping.find({ projectId, status: 'ACTIVE' }).populate('deviceAssetId', 'deviceId name status transport').lean()
+  ]);
+
+  const catMap = new Map();
+  catalogues.forEach(c => catMap.set(c.uid, c));
+  legacyCatalogues.forEach(c => catMap.set(c.code, c));
+
+  const mappingMap = new Map();
+  activeMappings.forEach(m => mappingMap.set(m.sensorAssetId.toString(), m));
+
+  const withChannels = await Promise.all(rows.map(async (x) => {
+    const channels = await SensorChannel.find({ instrumentId: x._id }).lean();
+    const cat = catMap.get(x.sensor_uid) || catMap.get(x.catalogCode) || {};
+    const mapping = mappingMap.get(x._id.toString());
+    const activeDevice = mapping?.deviceAssetId ? {
+      _id: mapping.deviceAssetId._id,
+      deviceId: mapping.deviceAssetId.deviceId,
+      name: mapping.deviceAssetId.name,
+      status: mapping.deviceAssetId.status
+    } : null;
+
+    return {
+      ...x,
+      typeName: cat.name || cat.type || x.catalogCode,
+      catalogName: cat.name || x.name,
+      model: cat.model || x.metadata?.model || '—',
+      signal_type: cat.signal_type || x.metadata?.signal_type || '—',
+      activeDevice,
+      activeMapping: mapping ? { slot: mapping.connection?.slot, mode: mapping.connection?.mode } : null,
+      channels
+    };
+  }));
+
   res.json(withChannels);
 }));
 
@@ -19,6 +57,7 @@ router.post('/projects/:projectId/instruments', requireProjectAccess, asyncHandl
   const catalog = await InstrumentCatalog.findOne({ code: String(req.body.catalogCode || '').toUpperCase() }); if (!catalog) throw new ApiError(400, 'Instrument catalogue item not found');
   const instrument = await Instrument.create({ organizationId: req.auth.organizationId, projectId: req.params.projectId, siteId: req.body.siteId, zoneId: req.body.zoneId, catalogCode: catalog.code, name: req.body.name || catalog.name, code: req.body.code, serial: req.body.serial, coordinates: req.body.coordinates, orientationDeg: req.body.orientationDeg, depthM: req.body.depthM, status: 'PLANNED', metadata: req.body.metadata || {} });
   for (const ch of req.body.channels || catalog.defaultChannels || []) await SensorChannel.create({ organizationId: req.auth.organizationId, projectId: req.params.projectId, instrumentId: instrument._id, deviceId: ch.deviceId, code: ch.code, sourceField: ch.sourceField || ch.code, parameterCode: ch.parameterCode, rawUnit: ch.rawUnit, engineeringUnit: ch.engineeringUnit, sampleIntervalSec: ch.sampleIntervalSec || 900, calibration: ch.calibration || { scale:1,offset:0,version:1 }, baseline: ch.baseline || { value:0,version:1 }, qualityConfig: ch.qualityConfig || {} });
+  await Project.updateOne({ _id: req.params.projectId, setupStatus: 'SETUP_REQUIRED' }, { $set: { setupStatus: 'COMMISSIONING' } });
   await audit({ req, projectId: req.params.projectId, action: 'INSTRUMENT_CREATED', resourceType: 'Instrument', resourceId: instrument._id, newState: instrument.toObject() });
   res.status(201).json(instrument);
 }));
@@ -60,6 +99,7 @@ router.post('/instruments/:id/commission', asyncHandler(async (req, res) => {
 router.get('/projects/:projectId/devices', requireProjectAccess, asyncHandler(async (req, res) => res.json(await Device.find({ projectId: req.params.projectId }).sort({ name: 1 }).lean())));
 router.post('/projects/:projectId/devices', requireProjectAccess, asyncHandler(async (req, res) => {
   const key = `gxn_${randomToken(16)}`; const doc = await Device.create({ organizationId: req.auth.organizationId, projectId: req.params.projectId, deviceId: req.body.deviceId, name: req.body.name, deviceType: req.body.deviceType || 'LOGGER', transport: req.body.transport || '4G', firmware: req.body.firmware, apiKeyHash: sha256(key), apiKeyPrefix: key.slice(0,10), expectedIntervalSec: req.body.expectedIntervalSec || 900, status: 'PLANNED' });
+  await Project.updateOne({ _id: req.params.projectId, setupStatus: 'SETUP_REQUIRED' }, { $set: { setupStatus: 'COMMISSIONING' } });
   await audit({ req, projectId: req.params.projectId, action: 'DEVICE_CREATED', resourceType: 'Device', resourceId: doc._id, newState: doc.toObject() }); res.status(201).json({ device: doc, apiKey: key });
 }));
 router.post('/devices/:id/rotate-key', asyncHandler(async (req, res) => { const device = await Device.findOne({ _id: req.params.id, organizationId: req.auth.organizationId }); if (!device) throw new ApiError(404,'Device not found'); await ensureProjectAccess(req, device.projectId); const key=`gxn_${randomToken(16)}`; device.apiKeyHash=sha256(key); device.apiKeyPrefix=key.slice(0,10); await device.save(); await audit({ req, projectId:device.projectId, action:'DEVICE_KEY_ROTATED', resourceType:'Device', resourceId:device._id }); res.json({ deviceId:device.deviceId, apiKey:key }); }));

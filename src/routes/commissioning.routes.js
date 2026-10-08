@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
 import { 
   Project, Instrument, Device, ProjectGateway, 
@@ -14,6 +15,22 @@ import { randomToken, sha256 } from '../utils/crypto.js';
 
 const router = Router();
 router.use(requireAuth);
+router.use((_req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
+
+async function resolveProject(projectId) {
+  if (!projectId) throw new ApiError(400, 'Project ID is required');
+  const query = mongoose.Types.ObjectId.isValid(projectId)
+    ? { _id: projectId }
+    : { code: String(projectId).toUpperCase() };
+  const project = await Project.findOne(query).lean();
+  if (!project) throw new ApiError(404, 'Project not found');
+  return project;
+}
 
 /**
  * 1. GET /projects/:projectId/commissioning/summary
@@ -21,9 +38,9 @@ router.use(requireAuth);
  * All counts derived from actual DB asset records - never modifying plannedConfiguration.
  */
 router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, asyncHandler(async (req, res) => {
-  const { projectId } = req.params;
-  const project = await Project.findById(projectId).lean();
-  if (!project) throw new ApiError(404, 'Project not found');
+  const { projectId: rawProjectId } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const projectId = project._id;
 
   const planned = project.plannedConfiguration || { sensors: [], devices: [], gateways: [] };
 
@@ -54,6 +71,16 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
         { 'metadata.sensor_uid': item.sensor_uid }
       ]
     });
+    const registeredDocs = await Instrument.find({
+      projectId,
+      status: { $ne: 'DECOMMISSIONED' },
+      $or: [
+        { sensor_uid: item.sensor_uid },
+        { catalogCode: item.sensor_uid },
+        { 'metadata.sensor_uid': item.sensor_uid }
+      ]
+    }).select('_id code deviceId name status serial serialNumber').lean();
+
     return {
       sensor_uid: item.sensor_uid,
       name: item.name || cat.name || item.sensor_uid,
@@ -62,7 +89,15 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
       type: cat.type || 'General',
       plannedQuantity: item.quantity,
       registeredCount,
-      remaining: Math.max(0, item.quantity - registeredCount)
+      remaining: Math.max(0, item.quantity - registeredCount),
+      registeredAssets: registeredDocs.map(d => ({
+        _id: d._id,
+        code: d.code || d.deviceId || d.name,
+        deviceId: d.deviceId,
+        name: d.name,
+        status: d.status,
+        serial: d.serial || d.serialNumber || '—'
+      }))
     };
   }));
 
@@ -132,6 +167,7 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
     projectId,
     projectName: project.name,
     projectCode: project.code,
+    setupStatus: project.setupStatus || null,
     sensorProgress,
     deviceProgress,
     gatewayProgress,
@@ -148,7 +184,9 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
  * Returns all actual registered sensors with their resolved catalogue info & active device mapping.
  */
 router.get('/projects/:projectId/commissioning/sensors', requireProjectAccess, asyncHandler(async (req, res) => {
-  const { projectId } = req.params;
+  const { projectId: rawProjectId } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const projectId = project._id;
 
   const instruments = await Instrument.find({ 
     projectId, 
@@ -299,6 +337,10 @@ router.post('/projects/:projectId/commissioning/sensors/bulk-register', requireP
     createdInstruments.push(instrument);
   }
 
+  if (createdInstruments.length > 0 && project.setupStatus === 'SETUP_REQUIRED') {
+    await Project.updateOne({ _id: projectId }, { $set: { setupStatus: 'COMMISSIONING' } });
+  }
+
   await audit({
     req,
     organizationId: req.auth.organizationId,
@@ -321,7 +363,9 @@ router.post('/projects/:projectId/commissioning/sensors/bulk-register', requireP
  * Returns all actual registered devices with catalogue info, capacity & active gateway mappings.
  */
 router.get('/projects/:projectId/commissioning/devices', requireProjectAccess, asyncHandler(async (req, res) => {
-  const { projectId } = req.params;
+  const { projectId: rawProjectId } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const projectId = project._id;
 
   const devices = await Device.find({ 
     projectId, 
@@ -463,6 +507,10 @@ router.post('/projects/:projectId/commissioning/devices/bulk-register', requireP
     createdDevices.push(device);
   }
 
+  if (createdDevices.length > 0 && project.setupStatus === 'SETUP_REQUIRED') {
+    await Project.updateOne({ _id: projectId }, { $set: { setupStatus: 'COMMISSIONING' } });
+  }
+
   await audit({
     req,
     organizationId: req.auth.organizationId,
@@ -485,7 +533,9 @@ router.post('/projects/:projectId/commissioning/devices/bulk-register', requireP
  * Returns all actual registered gateways with catalogue info & capacity.
  */
 router.get('/projects/:projectId/commissioning/gateways', requireProjectAccess, asyncHandler(async (req, res) => {
-  const { projectId } = req.params;
+  const { projectId: rawProjectId } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const projectId = project._id;
 
   const gateways = await ProjectGateway.find({ 
     projectId, 
@@ -607,6 +657,10 @@ router.post('/projects/:projectId/commissioning/gateways/bulk-register', require
     createdGateways.push(gateway);
   }
 
+  if (createdGateways.length > 0 && project.setupStatus === 'SETUP_REQUIRED') {
+    await Project.updateOne({ _id: projectId }, { $set: { setupStatus: 'COMMISSIONING' } });
+  }
+
   await audit({
     req,
     organizationId: req.auth.organizationId,
@@ -631,7 +685,7 @@ router.post('/projects/:projectId/commissioning/gateways/bulk-register', require
 const bulkSensorDeviceMappingSchema = z.object({
   deviceAssetId: z.string().min(1, 'Target device is required'),
   sensorAssetIds: z.array(z.string()).min(1, 'At least one sensor must be selected'),
-  autoAssignSlots: z.boolean().default(true),
+  autoAssignSlots: z.boolean().optional(),
   slotAssignments: z.array(z.object({
     sensorAssetId: z.string(),
     slot: z.number().int().min(1)
@@ -721,7 +775,8 @@ router.post('/projects/:projectId/commissioning/sensor-device-mappings/bulk', re
   const occupiedSlots = new Set(currentActiveOnDevice.map(m => m.connection?.slot).filter(Boolean));
   const newAssignments = [];
 
-  if (slotAssignments && slotAssignments.length > 0 && !autoAssignSlots) {
+  const isManual = slotAssignments && slotAssignments.length > 0 && autoAssignSlots !== true;
+  if (isManual) {
     // Manual slot assignments
     const manualSlotSet = new Set();
     for (const sa of slotAssignments) {
@@ -1016,6 +1071,172 @@ router.post('/projects/:projectId/commissioning/device-gateway-mappings/unassign
   res.json({
     message: `Successfully unassigned ${activeMappings.length} device(s) from gateway`,
     unassignedCount: activeMappings.length
+  });
+}));
+
+/**
+ * 10. GET /projects/:projectId/commissioning/sensors/:instrumentId/setup
+ * Returns complete setup context for an existing registered Sensor (Instrument)
+ */
+router.get('/projects/:projectId/commissioning/sensors/:instrumentId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId: rawProjectId, instrumentId } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const resolvedProjectId = project._id;
+
+  // Resolve instrument by ObjectId or code/deviceId/serial/name
+  const idOrCode = [
+    { code: instrumentId },
+    { code: new RegExp(`^${instrumentId}$`, 'i') },
+    { deviceId: instrumentId },
+    { serial: instrumentId },
+    { name: instrumentId }
+  ];
+  if (mongoose.Types.ObjectId.isValid(instrumentId)) {
+    idOrCode.unshift({ _id: instrumentId });
+  }
+
+  const instrument = await Instrument.findOne({
+    projectId: resolvedProjectId,
+    $or: idOrCode
+  }).lean();
+  if (!instrument) throw new ApiError(404, 'Sensor not found');
+
+  const sensorLookup = [
+    instrument.sensor_uid ? { uid: instrument.sensor_uid } : null,
+    instrument.catalogCode ? { uid: instrument.catalogCode } : null,
+    instrument.catalogCode ? { code: instrument.catalogCode } : null,
+    instrument.name ? { name: instrument.name } : null
+  ].filter(Boolean);
+
+  const [channels, mapping, sensorCat] = await Promise.all([
+    SensorChannel.find({ instrumentId: instrument._id }).lean(),
+    SensorDeviceMapping.findOne({ projectId: resolvedProjectId, sensorAssetId: instrument._id, status: 'ACTIVE' })
+      .populate('deviceAssetId', 'deviceId name device_uid transport status')
+      .lean(),
+    sensorLookup.length > 0 ? Sensor.findOne({ $or: sensorLookup }).lean() : Promise.resolve(null)
+  ]);
+
+  let deviceCat = null;
+  if (mapping?.deviceAssetId?.device_uid) {
+    deviceCat = await DeviceCatalogue.findOne({ uid: mapping.deviceAssetId.device_uid }).lean();
+  }
+
+  res.json({
+    instrument,
+    catalogue: sensorCat || { name: instrument.name, model: instrument.metadata?.model, signal_type: instrument.metadata?.signal_type, channels: [] },
+    channels,
+    mapping: mapping ? {
+      _id: mapping._id,
+      device: mapping.deviceAssetId ? {
+        _id: mapping.deviceAssetId._id,
+        deviceId: mapping.deviceAssetId.deviceId,
+        name: mapping.deviceAssetId.name,
+        model: deviceCat?.name || deviceCat?.model || '—',
+        transport: mapping.deviceAssetId.transport,
+        status: mapping.deviceAssetId.status
+      } : null,
+      connection: mapping.connection,
+      mappedAt: mapping.mappedAt
+    } : null
+  });
+}));
+
+/**
+ * 11. PUT /projects/:projectId/commissioning/sensors/:instrumentId/setup
+ * Updates installation, engineering parameters, channels, calibration, baseline and lifecycle for an existing Sensor.
+ * Operates on the SAME Instrument record — never creates duplicate assets.
+ */
+router.put('/projects/:projectId/commissioning/sensors/:instrumentId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId: rawProjectId, instrumentId } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const resolvedProjectId = project._id;
+
+  // Resolve instrument by ObjectId or code/deviceId/serial/name
+  const idOrCode = [
+    { code: instrumentId },
+    { code: new RegExp(`^${instrumentId}$`, 'i') },
+    { deviceId: instrumentId },
+    { serial: instrumentId },
+    { name: instrumentId }
+  ];
+  if (mongoose.Types.ObjectId.isValid(instrumentId)) {
+    idOrCode.unshift({ _id: instrumentId });
+  }
+
+  const instrument = await Instrument.findOne({
+    projectId: resolvedProjectId,
+    $or: idOrCode
+  });
+  if (!instrument) throw new ApiError(404, 'Sensor not found');
+
+  const {
+    siteId,
+    zoneId,
+    coordinates,
+    depthM,
+    orientationDeg,
+    serial,
+    channels = [],
+    commission = false
+  } = req.body;
+
+  if (siteId !== undefined) instrument.siteId = siteId || undefined;
+  if (zoneId !== undefined) instrument.zoneId = zoneId || undefined;
+  if (coordinates !== undefined) instrument.coordinates = coordinates;
+  if (depthM !== undefined) instrument.depthM = depthM;
+  if (orientationDeg !== undefined) instrument.orientationDeg = orientationDeg;
+  if (serial !== undefined && serial) instrument.serial = serial;
+
+  if (commission) {
+    instrument.status = 'COMMISSIONED';
+    instrument.commissionedAt = new Date();
+    instrument.commissionedBy = req.auth.userId;
+  } else if (instrument.status === 'REGISTERED') {
+    instrument.status = 'INSTALLED';
+  }
+
+  await instrument.save();
+
+  // Upsert channels for this instrument
+  const savedChannels = [];
+  for (const ch of channels) {
+    if (!ch.code) continue;
+    let channelDoc = await SensorChannel.findOne({ instrumentId: instrument._id, code: ch.code });
+    if (!channelDoc) {
+      channelDoc = new SensorChannel({
+        organizationId: instrument.organizationId,
+        projectId: instrument.projectId,
+        instrumentId: instrument._id,
+        code: ch.code
+      });
+    }
+
+    if (ch.parameterCode) channelDoc.parameterCode = ch.parameterCode;
+    if (ch.rawUnit !== undefined) channelDoc.rawUnit = ch.rawUnit;
+    if (ch.engineeringUnit !== undefined) channelDoc.engineeringUnit = ch.engineeringUnit;
+    if (ch.sampleIntervalSec !== undefined) channelDoc.sampleIntervalSec = ch.sampleIntervalSec;
+    if (ch.enabled !== undefined) channelDoc.enabled = ch.enabled;
+    if (ch.calibration) channelDoc.calibration = ch.calibration;
+    if (ch.baseline) channelDoc.baseline = ch.baseline;
+
+    await channelDoc.save();
+    savedChannels.push(channelDoc);
+  }
+
+  await audit({
+    req,
+    organizationId: req.auth.organizationId,
+    projectId,
+    action: commission ? 'INSTRUMENT_COMMISSIONED' : 'INSTRUMENT_SETUP_UPDATED',
+    resourceType: 'Instrument',
+    resourceId: instrument._id,
+    newState: { instrument: instrument.toObject(), channelsCount: savedChannels.length }
+  });
+
+  res.json({
+    message: commission ? 'Sensor successfully commissioned' : 'Sensor setup saved successfully',
+    instrument,
+    channels: savedChannels
   });
 }));
 

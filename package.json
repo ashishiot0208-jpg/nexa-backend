@@ -5,7 +5,7 @@
   "type": "module",
   "description": "GeoNexa geotechnical monitoring backend - Node.js, Express.js and MongoDB",
   "scripts": {
-    "dev": "node --watch src/server.js",
+    "dev": "node --watch --watch-path=src src/server.js",
     "start": "node src/server.js",
     "seed": "node src/seed/seed.js",
     "check": "node scripts/check-syntax.js",
