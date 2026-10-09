@@ -10,19 +10,30 @@ const projectGatewaySchema = new Schema({
   projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
   gatewayId: { type: String, required: true }, // e.g. GW-DAM-01
   name: { type: String, required: true },
+  model: { type: String, default: '' },
   gateway_uid: { type: String, required: true }, // references GatewayCatalogue.uid e.g. GW000001
   serial: { type: String, default: '' },
+  siteId: { type: String, default: '' },
+  zoneId: { type: String, default: '' },
+  coordinates: { type: [Number] }, // [longitude, latitude]
+  gatewayEui: { type: String, default: '' },
+  activeBackhaul: { type: String, default: 'ethernet' }, // 'ethernet' | '4g'
   imei: { type: String, default: '' },
   macAddress: { type: String, default: '' },
   status: { 
     type: String, 
-    enum: ['PLANNED', 'REGISTERED', 'ONLINE', 'OFFLINE', 'COMMISSIONED', 'MAINTENANCE', 'DECOMMISSIONED'], 
+    enum: ['PLANNED', 'REGISTERED', 'SETUP_IN_PROGRESS', 'COMMISSIONED', 'ONLINE', 'OFFLINE', 'MAINTENANCE', 'DECOMMISSIONED'], 
     default: 'REGISTERED' 
   },
+  commissionedAt: Date,
+  commissionedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   metadata: { type: Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
 
 projectGatewaySchema.index({ projectId: 1, gatewayId: 1 }, { unique: true });
+projectGatewaySchema.index({ organizationId: 1, gatewayEui: 1 }, { sparse: true });
+projectGatewaySchema.index({ organizationId: 1, imei: 1 }, { sparse: true });
+projectGatewaySchema.index({ organizationId: 1, macAddress: 1 }, { sparse: true });
 
 /**
  * SensorDeviceMapping Model

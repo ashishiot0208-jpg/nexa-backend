@@ -147,14 +147,24 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
   // Calculate actual registered gateways progress
   const gatewayProgress = await Promise.all((planned.gateways || []).map(async (item) => {
     const cat = gatewayCatMap.get(item.gateway_uid) || {};
+    const gatewayOrFilter = [
+      { gateway_uid: item.gateway_uid },
+      { 'metadata.gateway_uid': item.gateway_uid },
+      item.model ? { model: item.model } : null,
+      item.name ? { name: item.name } : null
+    ].filter(Boolean);
+
     const registeredCount = await ProjectGateway.countDocuments({
       projectId,
       status: { $ne: 'DECOMMISSIONED' },
-      $or: [
-        { gateway_uid: item.gateway_uid },
-        { 'metadata.gateway_uid': item.gateway_uid }
-      ]
+      $or: gatewayOrFilter
     });
+    const registeredDocs = await ProjectGateway.find({
+      projectId,
+      status: { $ne: 'DECOMMISSIONED' },
+      $or: gatewayOrFilter
+    }).select('_id gatewayId name status serial gateway_uid gatewayEui imei macAddress activeBackhaul').lean();
+
     return {
       gateway_uid: item.gateway_uid,
       name: item.name || cat.name || item.gateway_uid,
@@ -164,7 +174,19 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
       max_devices: cat.max_devices || 100,
       plannedQuantity: item.quantity,
       registeredCount,
-      remaining: Math.max(0, item.quantity - registeredCount)
+      remaining: Math.max(0, item.quantity - registeredCount),
+      registeredAssets: registeredDocs.map(g => ({
+        _id: g._id,
+        gatewayId: g.gatewayId,
+        name: g.name,
+        status: g.status,
+        serial: g.serial || '—',
+        gateway_uid: g.gateway_uid,
+        gatewayEui: g.gatewayEui,
+        activeBackhaul: g.activeBackhaul,
+        imei: g.imei,
+        macAddress: g.macAddress
+      }))
     };
   }));
 
@@ -594,6 +616,12 @@ router.get('/projects/:projectId/commissioning/gateways', requireProjectAccess, 
       max_devices: maxDevices,
       mappedDevices,
       availableDevices,
+      siteId: g.siteId || '',
+      zoneId: g.zoneId || '',
+      coordinates: g.coordinates || null,
+      gatewayEui: g.gatewayEui || '',
+      activeBackhaul: g.activeBackhaul || 'ethernet',
+      commissionedAt: g.commissionedAt || null,
       status: g.status
     };
   });
@@ -1846,6 +1874,458 @@ router.post('/projects/:projectId/commissioning/devices/:deviceId/verify', requi
   res.json({
     valid,
     summary: valid ? 'Device is ready to commission.' : 'Please correct the highlighted items before commissioning.',
+    checks
+  });
+}));
+
+/**
+ * 15. GET /projects/:projectId/commissioning/gateways/:gatewayId/setup
+ * Returns complete setup context for an existing registered Gateway.
+ */
+router.get('/projects/:projectId/commissioning/gateways/:gatewayId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId: rawProjectId, gatewayId: gatewayIdParam } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const resolvedProjectId = project._id;
+
+  const idOrCode = [
+    { gatewayId: gatewayIdParam },
+    { gatewayId: new RegExp(`^${gatewayIdParam}$`, 'i') },
+    { serial: gatewayIdParam },
+    { name: gatewayIdParam }
+  ];
+  if (mongoose.Types.ObjectId.isValid(gatewayIdParam)) {
+    idOrCode.unshift({ _id: gatewayIdParam });
+  }
+
+  const gateway = await ProjectGateway.findOne({
+    projectId: resolvedProjectId,
+    $or: idOrCode
+  }).lean();
+  if (!gateway) throw new ApiError(404, 'Gateway not found');
+
+  const catLookup = [
+    gateway.gateway_uid ? { uid: gateway.gateway_uid } : null,
+    gateway.metadata?.gateway_uid ? { uid: gateway.metadata.gateway_uid } : null,
+    gateway.model ? { model: gateway.model } : null,
+    gateway.metadata?.model ? { model: gateway.metadata.model } : null,
+    gateway.name ? { name: gateway.name } : null
+  ].filter(Boolean);
+  const catalogue = catLookup.length > 0 ? await GatewayCatalogue.findOne({ $or: catLookup }).lean() : null;
+
+  // Active mapped devices for this gateway
+  const deviceMappings = await DeviceGatewayMapping.find({
+    projectId: resolvedProjectId,
+    gatewayAssetId: gateway._id,
+    status: 'ACTIVE'
+  }).populate('deviceAssetId', '_id deviceId name device_uid transport model serial status').lean();
+
+  const deviceUids = [...new Set(deviceMappings.map(m => m.deviceAssetId?.device_uid).filter(Boolean))];
+  const devCats = await DeviceCatalogue.find({ uid: { $in: deviceUids } }).lean();
+  const devCatMap = new Map(devCats.map(c => [c.uid, c]));
+
+  const supportedComms = catalogue?.supported_device_communications || ['lorawan'];
+
+  let allCompatible = true;
+  const connectedDevices = deviceMappings.map(m => {
+    const d = m.deviceAssetId || {};
+    const cat = devCatMap.get(d.device_uid) || {};
+    const communication = cat.communication || (d.transport === 'LORAWAN' ? 'lorawan' : (d.transport ? d.transport.toLowerCase() : 'lorawan'));
+    const isCompatible = supportedComms.includes(communication);
+    if (!isCompatible) allCompatible = false;
+
+    return {
+      mappingId: m._id,
+      deviceId: d.deviceId,
+      name: d.name,
+      model: cat.model || d.model || '—',
+      communication,
+      isCompatible,
+      status: d.status || 'COMMISSIONED',
+      mappedAt: m.mappedAt
+    };
+  });
+
+  const maxDevices = catalogue?.max_devices || 100;
+  const usedDevices = connectedDevices.length;
+  const availableDevices = Math.max(0, maxDevices - usedDevices);
+
+  res.json({
+    gateway,
+    catalogue: catalogue || {
+      name: gateway.name,
+      model: gateway.metadata?.model || '—',
+      uid: gateway.gateway_uid || '—',
+      supported_device_communications: supportedComms,
+      backhaul: ['ethernet', '4g'],
+      max_devices: maxDevices
+    },
+    capacity: {
+      maxDevices,
+      usedDevices,
+      availableDevices
+    },
+    connectedDevices,
+    isAllDevicesCompatible: allCompatible
+  });
+}));
+
+/**
+ * 16. PUT /projects/:projectId/commissioning/gateways/:gatewayId/setup
+ * Updates installation, network identity, active backhaul, and commissioning status for an existing Gateway.
+ * Operates on the SAME Gateway record.
+ */
+router.put('/projects/:projectId/commissioning/gateways/:gatewayId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId: rawProjectId, gatewayId: gatewayIdParam } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const resolvedProjectId = project._id;
+
+  const idOrCode = [
+    { gatewayId: gatewayIdParam },
+    { gatewayId: new RegExp(`^${gatewayIdParam}$`, 'i') },
+    { serial: gatewayIdParam },
+    { name: gatewayIdParam }
+  ];
+  if (mongoose.Types.ObjectId.isValid(gatewayIdParam)) {
+    idOrCode.unshift({ _id: gatewayIdParam });
+  }
+
+  const gateway = await ProjectGateway.findOne({
+    projectId: resolvedProjectId,
+    $or: idOrCode
+  });
+  if (!gateway) throw new ApiError(404, 'Gateway not found');
+
+  const {
+    siteId,
+    zoneId,
+    coordinates,
+    serial,
+    gatewayEui,
+    activeBackhaul,
+    imei,
+    macAddress,
+    commission = false
+  } = req.body;
+
+  if (siteId !== undefined) gateway.siteId = siteId || '';
+  if (zoneId !== undefined) gateway.zoneId = zoneId || '';
+  if (coordinates !== undefined) gateway.coordinates = coordinates;
+  if (serial !== undefined && serial) gateway.serial = serial.trim();
+  if (activeBackhaul !== undefined) gateway.activeBackhaul = activeBackhaul || 'ethernet';
+
+  // Network identifier validations
+  if (gatewayEui !== undefined) {
+    if (gatewayEui && gatewayEui.trim()) {
+      const trimmedEui = gatewayEui.trim().toUpperCase();
+      if (!/^[0-9A-F]{16}$/i.test(trimmedEui)) {
+        throw new ApiError(400, 'Gateway EUI must be exactly 16 hexadecimal characters.');
+      }
+      const conflict = await ProjectGateway.findOne({
+        organizationId: req.auth.organizationId,
+        _id: { $ne: gateway._id },
+        gatewayEui: trimmedEui,
+        status: { $ne: 'DECOMMISSIONED' }
+      });
+      if (conflict) {
+        throw new ApiError(409, `Gateway EUI '${trimmedEui}' is already assigned to Gateway '${conflict.gatewayId}'`);
+      }
+      gateway.gatewayEui = trimmedEui;
+    } else {
+      gateway.gatewayEui = '';
+    }
+  }
+
+  if (imei !== undefined) {
+    if (imei && imei.trim()) {
+      const trimmedImei = imei.trim();
+      const conflict = await ProjectGateway.findOne({
+        organizationId: req.auth.organizationId,
+        _id: { $ne: gateway._id },
+        imei: trimmedImei,
+        status: { $ne: 'DECOMMISSIONED' }
+      });
+      if (conflict) {
+        throw new ApiError(409, `IMEI '${trimmedImei}' is already assigned to Gateway '${conflict.gatewayId}'`);
+      }
+      gateway.imei = trimmedImei;
+    } else {
+      gateway.imei = '';
+    }
+  }
+
+  if (macAddress !== undefined) {
+    if (macAddress && macAddress.trim()) {
+      const trimmedMac = macAddress.trim().toUpperCase();
+      const conflict = await ProjectGateway.findOne({
+        organizationId: req.auth.organizationId,
+        _id: { $ne: gateway._id },
+        macAddress: trimmedMac,
+        status: { $ne: 'DECOMMISSIONED' }
+      });
+      if (conflict) {
+        throw new ApiError(409, `MAC Address '${trimmedMac}' is already assigned to Gateway '${conflict.gatewayId}'`);
+      }
+      gateway.macAddress = trimmedMac;
+    } else {
+      gateway.macAddress = '';
+    }
+  }
+
+  // Resolve catalogue to determine capabilities
+  const catLookup = [
+    gateway.gateway_uid ? { uid: gateway.gateway_uid } : null,
+    gateway.metadata?.gateway_uid ? { uid: gateway.metadata.gateway_uid } : null,
+    gateway.model ? { model: gateway.model } : null,
+    gateway.metadata?.model ? { model: gateway.metadata.model } : null,
+    gateway.name ? { name: gateway.name } : null
+  ].filter(Boolean);
+  const catalogue = catLookup.length > 0 ? await GatewayCatalogue.findOne({ $or: catLookup }).lean() : null;
+  const supportedComms = catalogue?.supported_device_communications || ['lorawan'];
+
+  if (commission) {
+    // 1. Site selected validation
+    if (!gateway.siteId && !siteId) {
+      throw new ApiError(400, 'Cannot commission gateway: A Site / Structure must be selected.');
+    }
+
+    // 2. Network identity validation for LoRaWAN gateway
+    const effectiveEui = (gatewayEui !== undefined ? gatewayEui : gateway.gatewayEui)?.trim();
+    const effectiveMac = (macAddress !== undefined ? macAddress : gateway.macAddress)?.trim();
+    if (supportedComms.includes('lorawan') && !effectiveEui && !effectiveMac) {
+      throw new ApiError(400, 'Cannot commission LoRaWAN gateway: Gateway EUI or MAC Address is required.');
+    }
+    if (effectiveEui && !/^[0-9A-F]{16}$/i.test(effectiveEui)) {
+      throw new ApiError(400, 'Gateway EUI must be exactly 16 hexadecimal characters.');
+    }
+
+    // 3. Active backhaul validation
+    const effectiveBackhaul = activeBackhaul || gateway.activeBackhaul || 'ethernet';
+    const supportedBackhauls = catalogue?.backhaul || ['ethernet', '4g'];
+    if (!supportedBackhauls.includes(effectiveBackhaul)) {
+      throw new ApiError(400, `Active backhaul '${effectiveBackhaul}' is not supported by this gateway.`);
+    }
+
+    // 4. Mapped devices compatibility check
+    const deviceMappings = await DeviceGatewayMapping.find({
+      projectId: resolvedProjectId,
+      gatewayAssetId: gateway._id,
+      status: 'ACTIVE'
+    }).populate('deviceAssetId', '_id deviceId name device_uid transport model').lean();
+
+    const deviceUids = [...new Set(deviceMappings.map(m => m.deviceAssetId?.device_uid).filter(Boolean))];
+    const devCats = await DeviceCatalogue.find({ uid: { $in: deviceUids } }).lean();
+    const devCatMap = new Map(devCats.map(c => [c.uid, c]));
+
+    for (const m of deviceMappings) {
+      const d = m.deviceAssetId || {};
+      const cat = devCatMap.get(d.device_uid) || {};
+      const devComm = cat.communication || (d.transport === 'LORAWAN' ? 'lorawan' : (d.transport ? d.transport.toLowerCase() : 'lorawan'));
+      if (!supportedComms.includes(devComm)) {
+        throw new ApiError(400, `Cannot commission gateway: Mapped device '${d.deviceId}' communication '${devComm}' is incompatible with gateway.`);
+      }
+    }
+
+    // 5. Capacity validation
+    const maxDevices = catalogue?.max_devices || 100;
+    if (deviceMappings.length > maxDevices) {
+      throw new ApiError(400, `Cannot commission gateway: Capacity exceeded (${deviceMappings.length} / ${maxDevices} devices mapped).`);
+    }
+
+    gateway.status = 'COMMISSIONED';
+    gateway.commissionedAt = new Date();
+    gateway.commissionedBy = req.auth.userId;
+  } else if (gateway.status !== 'COMMISSIONED') {
+    gateway.status = 'SETUP_IN_PROGRESS';
+  }
+
+  await gateway.save();
+
+  await audit({
+    req,
+    organizationId: req.auth.organizationId,
+    projectId: resolvedProjectId,
+    action: commission ? 'GATEWAY_COMMISSIONED' : 'GATEWAY_SETUP_UPDATED',
+    resourceType: 'ProjectGateway',
+    resourceId: gateway._id,
+    newState: gateway.toObject()
+  });
+
+  res.json({
+    message: commission ? 'Gateway successfully commissioned' : 'Gateway setup saved successfully',
+    gateway
+  });
+}));
+
+/**
+ * 17. POST /projects/:projectId/commissioning/gateways/:gatewayId/verify
+ * Runs read-only commissioning verification checks on an existing Gateway.
+ * Does NOT mutate status, commissionedAt, commissionedBy, or existing mappings.
+ */
+router.post('/projects/:projectId/commissioning/gateways/:gatewayId/verify', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId: rawProjectId, gatewayId: gatewayIdParam } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const resolvedProjectId = project._id;
+
+  const idOrCode = [
+    { gatewayId: gatewayIdParam },
+    { gatewayId: new RegExp(`^${gatewayIdParam}$`, 'i') },
+    { serial: gatewayIdParam },
+    { name: gatewayIdParam }
+  ];
+  if (mongoose.Types.ObjectId.isValid(gatewayIdParam)) {
+    idOrCode.unshift({ _id: gatewayIdParam });
+  }
+
+  const gateway = await ProjectGateway.findOne({
+    projectId: resolvedProjectId,
+    $or: idOrCode
+  }).lean();
+  if (!gateway) throw new ApiError(404, 'Gateway not found');
+
+  const {
+    siteId,
+    gatewayEui,
+    macAddress,
+    activeBackhaul,
+    imei
+  } = req.body || {};
+
+  const effectiveSiteId = siteId || gateway.siteId;
+  const effectiveEui = (gatewayEui !== undefined ? gatewayEui : gateway.gatewayEui)?.trim();
+  const effectiveMac = (macAddress !== undefined ? macAddress : gateway.macAddress)?.trim();
+  const effectiveBackhaul = activeBackhaul || gateway.activeBackhaul || 'ethernet';
+
+  // Resolve catalogue
+  const catLookup = [
+    gateway.gateway_uid ? { uid: gateway.gateway_uid } : null,
+    gateway.metadata?.gateway_uid ? { uid: gateway.metadata.gateway_uid } : null,
+    gateway.model ? { model: gateway.model } : null,
+    gateway.metadata?.model ? { model: gateway.metadata.model } : null,
+    gateway.name ? { name: gateway.name } : null
+  ].filter(Boolean);
+  const catalogue = catLookup.length > 0 ? await GatewayCatalogue.findOne({ $or: catLookup }).lean() : null;
+  const supportedComms = catalogue?.supported_device_communications || ['lorawan'];
+  const supportedBackhauls = catalogue?.backhaul || ['ethernet', '4g'];
+
+  const checks = [];
+
+  // Check 1: Identity
+  checks.push({
+    key: 'identity',
+    name: 'Identity Valid',
+    passed: !!(gateway.gatewayId && (catalogue || gateway.name)),
+    message: catalogue ? `Resolved: ${catalogue.name || gateway.name}` : 'Gateway catalogue resolved'
+  });
+
+  // Check 2: Installation configured
+  checks.push({
+    key: 'location',
+    name: 'Installation Configured',
+    passed: !!effectiveSiteId,
+    message: effectiveSiteId ? 'Site / Structure selected' : 'Site / Structure must be selected'
+  });
+
+  // Check 3: Gateway Network Identity
+  if (supportedComms.includes('lorawan')) {
+    if (!effectiveEui && !effectiveMac) {
+      checks.push({
+        key: 'network',
+        name: 'Gateway Identity Valid',
+        passed: false,
+        message: 'Gateway EUI (16 hex) or MAC address is required'
+      });
+    } else if (effectiveEui && !/^[0-9A-F]{16}$/i.test(effectiveEui)) {
+      checks.push({
+        key: 'network',
+        name: 'Gateway Identity Valid',
+        passed: false,
+        message: 'Gateway EUI must be exactly 16 hexadecimal characters'
+      });
+    } else {
+      checks.push({
+        key: 'network',
+        name: 'Gateway Identity Valid',
+        passed: true,
+        message: effectiveEui ? `Gateway EUI: ${effectiveEui}` : `MAC: ${effectiveMac}`
+      });
+    }
+  } else {
+    checks.push({
+      key: 'network',
+      name: 'Gateway Identity Valid',
+      passed: true,
+      message: 'Network identity confirmed'
+    });
+  }
+
+  // Check 4: Backhaul Selected
+  if (!effectiveBackhaul) {
+    checks.push({
+      key: 'backhaul',
+      name: 'Backhaul Selected',
+      passed: false,
+      message: 'Active backhaul method must be selected'
+    });
+  } else if (!supportedBackhauls.includes(effectiveBackhaul)) {
+    checks.push({
+      key: 'backhaul',
+      name: 'Backhaul Selected',
+      passed: false,
+      message: `Selected backhaul '${effectiveBackhaul}' not in catalogue capabilities`
+    });
+  } else {
+    checks.push({
+      key: 'backhaul',
+      name: 'Backhaul Selected',
+      passed: true,
+      message: `Active backhaul configured: ${effectiveBackhaul.toUpperCase()}`
+    });
+  }
+
+  // Check 5: Device Mappings & Compatibility
+  const deviceMappings = await DeviceGatewayMapping.find({
+    projectId: resolvedProjectId,
+    gatewayAssetId: gateway._id,
+    status: 'ACTIVE'
+  }).populate('deviceAssetId', '_id deviceId name device_uid transport model').lean();
+
+  const deviceUids = [...new Set(deviceMappings.map(m => m.deviceAssetId?.device_uid).filter(Boolean))];
+  const devCats = await DeviceCatalogue.find({ uid: { $in: deviceUids } }).lean();
+  const devCatMap = new Map(devCats.map(c => [c.uid, c]));
+
+  let incompatibleCount = 0;
+  for (const m of deviceMappings) {
+    const d = m.deviceAssetId || {};
+    const cat = devCatMap.get(d.device_uid) || {};
+    const devComm = cat.communication || (d.transport === 'LORAWAN' ? 'lorawan' : (d.transport ? d.transport.toLowerCase() : 'lorawan'));
+    if (!supportedComms.includes(devComm)) {
+      incompatibleCount++;
+    }
+  }
+
+  checks.push({
+    key: 'compatibility',
+    name: 'Device Mappings Compatible',
+    passed: incompatibleCount === 0,
+    message: incompatibleCount === 0
+      ? `All ${deviceMappings.length} mapped devices compatible`
+      : `${incompatibleCount} mapped device(s) have incompatible communication protocol`
+  });
+
+  // Check 6: Capacity Valid
+  const maxDevices = catalogue?.max_devices || 100;
+  checks.push({
+    key: 'capacity',
+    name: 'Capacity Valid',
+    passed: deviceMappings.length <= maxDevices,
+    message: `${deviceMappings.length} / ${maxDevices} devices mapped`
+  });
+
+  const valid = checks.every(c => c.passed);
+
+  res.json({
+    valid,
+    summary: valid ? 'Gateway is ready to commission.' : 'Please correct the highlighted items before commissioning.',
     checks
   });
 }));
