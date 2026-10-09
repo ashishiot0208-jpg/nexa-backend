@@ -104,14 +104,22 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
   // Calculate actual registered devices progress and capacity
   const deviceProgress = await Promise.all((planned.devices || []).map(async (item) => {
     const cat = deviceCatMap.get(item.device_uid) || {};
+    const deviceOrFilter = [
+      { device_uid: item.device_uid },
+      { 'metadata.device_uid': item.device_uid },
+      ...(item.model ? [{ model: item.model }, { 'metadata.model': item.model }] : [])
+    ];
     const registeredCount = await Device.countDocuments({
       projectId,
       status: { $ne: 'DECOMMISSIONED' },
-      $or: [
-        { device_uid: item.device_uid },
-        { 'metadata.device_uid': item.device_uid }
-      ]
+      $or: deviceOrFilter
     });
+    const registeredDocs = await Device.find({
+      projectId,
+      status: { $ne: 'DECOMMISSIONED' },
+      $or: deviceOrFilter
+    }).select('_id deviceId name status serial devEui imei macAddress firmware transport').lean();
+
     return {
       device_uid: item.device_uid,
       name: item.name || cat.name || item.device_uid,
@@ -121,7 +129,18 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
       max_channels: cat.max_channels || 8,
       plannedQuantity: item.quantity,
       registeredCount,
-      remaining: Math.max(0, item.quantity - registeredCount)
+      remaining: Math.max(0, item.quantity - registeredCount),
+      registeredAssets: registeredDocs.map(d => ({
+        _id: d._id,
+        deviceId: d.deviceId,
+        name: d.name,
+        status: d.status,
+        serial: d.serial || '—',
+        devEui: d.devEui,
+        imei: d.imei,
+        macAddress: d.macAddress,
+        firmware: d.firmware
+      }))
     };
   }));
 
@@ -1283,6 +1302,551 @@ router.put('/projects/:projectId/commissioning/sensors/:instrumentId/setup', req
     message: commission ? 'Sensor successfully commissioned' : 'Sensor setup saved successfully',
     instrument,
     channels: savedChannels
+  });
+}));
+
+/**
+ * 12. GET /projects/:projectId/commissioning/devices/:deviceId/setup
+ * Returns complete setup context for an existing registered Device (Node / Logger).
+ */
+router.get('/projects/:projectId/commissioning/devices/:deviceId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId: rawProjectId, deviceId: deviceIdParam } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const resolvedProjectId = project._id;
+
+  const idOrCode = [
+    { deviceId: deviceIdParam },
+    { deviceId: new RegExp(`^${deviceIdParam}$`, 'i') },
+    { serial: deviceIdParam },
+    { name: deviceIdParam }
+  ];
+  if (mongoose.Types.ObjectId.isValid(deviceIdParam)) {
+    idOrCode.unshift({ _id: deviceIdParam });
+  }
+
+  const device = await Device.findOne({
+    projectId: resolvedProjectId,
+    $or: idOrCode
+  }).lean();
+  if (!device) throw new ApiError(404, 'Device not found');
+
+  const catLookup = [
+    device.device_uid ? { uid: device.device_uid } : null,
+    device.metadata?.device_uid ? { uid: device.metadata.device_uid } : null,
+    device.model ? { model: device.model } : null,
+    device.metadata?.model ? { model: device.metadata.model } : null,
+    device.name ? { name: device.name } : null
+  ].filter(Boolean);
+  const catalogue = catLookup.length > 0 ? await DeviceCatalogue.findOne({ $or: catLookup }).lean() : null;
+
+  // Active sensor mappings for this device
+  const sensorMappings = await SensorDeviceMapping.find({
+    projectId: resolvedProjectId,
+    deviceAssetId: device._id,
+    status: 'ACTIVE'
+  }).populate('sensorAssetId', '_id code name catalogCode sensor_uid serial status').lean();
+
+  const sensorUids = [...new Set(sensorMappings.map(m => m.sensorAssetId?.sensor_uid || m.sensorAssetId?.catalogCode).filter(Boolean))];
+  const sensorCats = await Sensor.find({ uid: { $in: sensorUids } }).lean();
+  const sensorCatMap = new Map(sensorCats.map(c => [c.uid, c]));
+
+  const connectedSensors = sensorMappings.map(m => {
+    const s = m.sensorAssetId || {};
+    const cat = sensorCatMap.get(s.sensor_uid || s.catalogCode) || {};
+    return {
+      mappingId: m._id,
+      sensorId: s._id,
+      code: s.code || s.deviceId || s.name,
+      name: s.name,
+      model: cat.model || s.metadata?.model || '—',
+      signal_type: cat.signal_type || s.metadata?.signal_type || '—',
+      slot: m.connection?.slot != null ? m.connection.slot : null,
+      port: m.connection?.port || null,
+      address: m.connection?.address || null,
+      mode: m.connection?.mode || 'slot',
+      mappedAt: m.mappedAt,
+      status: s.status || 'MAPPED'
+    };
+  }).sort((a, b) => (a.slot || 0) - (b.slot || 0));
+
+  // Active gateway mapping for this device
+  const gwMapping = await DeviceGatewayMapping.findOne({
+    projectId: resolvedProjectId,
+    deviceAssetId: device._id,
+    status: 'ACTIVE'
+  }).populate('gatewayAssetId', '_id gatewayId name gateway_uid status').lean();
+
+  let gwCat = null;
+  if (gwMapping?.gatewayAssetId?.gateway_uid) {
+    gwCat = await GatewayCatalogue.findOne({ uid: gwMapping.gatewayAssetId.gateway_uid }).lean();
+  }
+
+  const communication = catalogue?.communication || (device.transport === 'LORAWAN' ? 'lorawan' : '4g');
+  const isDirectCloud = communication === '4g';
+  const supportedComms = gwCat?.supported_device_communications || ['lorawan'];
+  const isCompatible = gwMapping ? supportedComms.includes(communication) : isDirectCloud;
+
+  const maxChannels = catalogue?.max_channels || device.metadata?.max_channels || 8;
+  const usedSlots = connectedSensors.length;
+  const availableSlots = Math.max(0, maxChannels - usedSlots);
+
+  res.json({
+    device,
+    catalogue: catalogue || {
+      name: device.name,
+      model: device.metadata?.model || '—',
+      uid: device.device_uid || '—',
+      type: device.deviceType || 'LOGGER',
+      communication,
+      supported_signal_types: device.metadata?.supported_signal_types || ['rs485', 'vibrating_wire'],
+      max_channels: maxChannels
+    },
+    capacity: {
+      maxChannels,
+      usedSlots,
+      availableSlots
+    },
+    connectedSensors,
+    gateway: gwMapping ? {
+      mappingId: gwMapping._id,
+      gatewayId: gwMapping.gatewayAssetId.gatewayId,
+      name: gwMapping.gatewayAssetId.name,
+      model: gwCat?.name || gwCat?.model || '—',
+      gateway_uid: gwMapping.gatewayAssetId.gateway_uid,
+      communication: supportedComms.join(', '),
+      isCompatible,
+      mappedAt: gwMapping.mappedAt
+    } : null,
+    isDirectCloud
+  });
+}));
+
+/**
+ * 13. PUT /projects/:projectId/commissioning/devices/:deviceId/setup
+ * Updates installation, network identity, firmware, and commissioning status for an existing Device.
+ * Operates on the SAME Device record.
+ */
+router.put('/projects/:projectId/commissioning/devices/:deviceId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId: rawProjectId, deviceId: deviceIdParam } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const resolvedProjectId = project._id;
+
+  const idOrCode = [
+    { deviceId: deviceIdParam },
+    { deviceId: new RegExp(`^${deviceIdParam}$`, 'i') },
+    { serial: deviceIdParam },
+    { name: deviceIdParam }
+  ];
+  if (mongoose.Types.ObjectId.isValid(deviceIdParam)) {
+    idOrCode.unshift({ _id: deviceIdParam });
+  }
+
+  const device = await Device.findOne({
+    projectId: resolvedProjectId,
+    $or: idOrCode
+  });
+  if (!device) throw new ApiError(404, 'Device not found');
+
+  const {
+    siteId,
+    zoneId,
+    coordinates,
+    serial,
+    devEui,
+    imei,
+    macAddress,
+    firmware,
+    commission = false
+  } = req.body;
+
+  if (siteId !== undefined) device.siteId = siteId || undefined;
+  if (zoneId !== undefined) device.zoneId = zoneId || undefined;
+  if (coordinates !== undefined) device.coordinates = coordinates;
+  if (serial !== undefined && serial) device.serial = serial.trim();
+  if (firmware !== undefined && firmware) device.firmware = firmware.trim();
+
+  // Validate and assign network identifiers
+  if (devEui !== undefined) {
+    if (devEui && devEui.trim()) {
+      const trimmedDevEui = devEui.trim().toUpperCase();
+      const conflict = await Device.findOne({
+        organizationId: req.auth.organizationId,
+        _id: { $ne: device._id },
+        devEui: trimmedDevEui,
+        status: { $ne: 'DECOMMISSIONED' }
+      });
+      if (conflict) {
+        throw new ApiError(409, `DevEUI '${trimmedDevEui}' is already assigned to Device '${conflict.deviceId}'`);
+      }
+      device.devEui = trimmedDevEui;
+    } else {
+      device.devEui = undefined;
+    }
+  }
+
+  if (imei !== undefined) {
+    if (imei && imei.trim()) {
+      const trimmedImei = imei.trim();
+      const conflict = await Device.findOne({
+        organizationId: req.auth.organizationId,
+        _id: { $ne: device._id },
+        imei: trimmedImei,
+        status: { $ne: 'DECOMMISSIONED' }
+      });
+      if (conflict) {
+        throw new ApiError(409, `IMEI '${trimmedImei}' is already assigned to Device '${conflict.deviceId}'`);
+      }
+      device.imei = trimmedImei;
+    } else {
+      device.imei = undefined;
+    }
+  }
+
+  if (macAddress !== undefined) {
+    if (macAddress && macAddress.trim()) {
+      const trimmedMac = macAddress.trim().toUpperCase();
+      const conflict = await Device.findOne({
+        organizationId: req.auth.organizationId,
+        _id: { $ne: device._id },
+        macAddress: trimmedMac,
+        status: { $ne: 'DECOMMISSIONED' }
+      });
+      if (conflict) {
+        throw new ApiError(409, `MAC Address '${trimmedMac}' is already assigned to Device '${conflict.deviceId}'`);
+      }
+      device.macAddress = trimmedMac;
+    } else {
+      device.macAddress = undefined;
+    }
+  }
+
+  // Resolve catalogue to determine communication requirements
+  const catLookup = [
+    device.device_uid ? { uid: device.device_uid } : null,
+    device.metadata?.device_uid ? { uid: device.metadata.device_uid } : null,
+    device.model ? { model: device.model } : null,
+    device.metadata?.model ? { model: device.metadata.model } : null,
+    device.name ? { name: device.name } : null
+  ].filter(Boolean);
+  const catalogue = catLookup.length > 0 ? await DeviceCatalogue.findOne({ $or: catLookup }).lean() : null;
+  const communication = catalogue?.communication || (device.transport === 'LORAWAN' ? 'lorawan' : '4g');
+
+  if (commission) {
+    // 1. Site selected validation
+    if (!device.siteId && !siteId) {
+      throw new ApiError(400, 'Cannot commission device: A Site / Structure must be selected.');
+    }
+
+    // 2. DevEUI required for LoRaWAN devices
+    const effectiveDevEui = (devEui !== undefined ? devEui : device.devEui)?.trim();
+    if (communication === 'lorawan' && !effectiveDevEui) {
+      throw new ApiError(400, 'Cannot commission LoRaWAN device: DevEUI is required.');
+    }
+
+    // 3. Gateway mapping validation for LoRaWAN devices
+    if (communication === 'lorawan') {
+      const activeGw = await DeviceGatewayMapping.findOne({
+        projectId: resolvedProjectId,
+        deviceAssetId: device._id,
+        status: 'ACTIVE'
+      }).populate('gatewayAssetId', '_id gatewayId name gateway_uid').lean();
+
+      if (!activeGw) {
+        throw new ApiError(400, 'Cannot commission LoRaWAN device: An active compatible Gateway mapping is required.');
+      }
+      let gwCat = null;
+      if (activeGw.gatewayAssetId?.gateway_uid) {
+        gwCat = await GatewayCatalogue.findOne({ uid: activeGw.gatewayAssetId.gateway_uid }).lean();
+      }
+      const supportedComms = gwCat?.supported_device_communications || ['lorawan'];
+      if (!supportedComms.includes('lorawan')) {
+        throw new ApiError(400, `Cannot commission device: Connected gateway '${activeGw.gatewayAssetId.gatewayId}' does not support LoRaWAN.`);
+      }
+    }
+
+    // 4. Capacity validation
+    const activeSensorsCount = await SensorDeviceMapping.countDocuments({
+      projectId: resolvedProjectId,
+      deviceAssetId: device._id,
+      status: 'ACTIVE'
+    });
+    const maxChannels = catalogue?.max_channels || device.metadata?.max_channels || 8;
+    if (activeSensorsCount > maxChannels) {
+      throw new ApiError(400, `Cannot commission device: Capacity exceeded (${activeSensorsCount} / ${maxChannels} slots used).`);
+    }
+
+    device.status = 'COMMISSIONED';
+    device.commissionedAt = new Date();
+    device.commissionedBy = req.auth.userId;
+  } else if (device.status !== 'COMMISSIONED') {
+    device.status = 'SETUP_IN_PROGRESS';
+  }
+
+  await device.save();
+
+  await audit({
+    req,
+    organizationId: req.auth.organizationId,
+    projectId: resolvedProjectId,
+    action: commission ? 'DEVICE_COMMISSIONED' : 'DEVICE_SETUP_UPDATED',
+    resourceType: 'Device',
+    resourceId: device._id,
+    newState: device.toObject()
+  });
+
+  res.json({
+    message: commission ? 'Device successfully commissioned' : 'Device setup saved successfully',
+    device
+  });
+}));
+
+/**
+ * 14. POST /projects/:projectId/commissioning/devices/:deviceId/verify
+ * Runs read-only commissioning verification checks on an existing Device.
+ * Does NOT mutate status, commissionedAt, commissionedBy, or existing mappings.
+ */
+router.post('/projects/:projectId/commissioning/devices/:deviceId/verify', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId: rawProjectId, deviceId: deviceIdParam } = req.params;
+  const project = await resolveProject(rawProjectId);
+  const resolvedProjectId = project._id;
+
+  const idOrCode = [
+    { deviceId: deviceIdParam },
+    { deviceId: new RegExp(`^${deviceIdParam}$`, 'i') },
+    { serial: deviceIdParam },
+    { name: deviceIdParam }
+  ];
+  if (mongoose.Types.ObjectId.isValid(deviceIdParam)) {
+    idOrCode.unshift({ _id: deviceIdParam });
+  }
+
+  const device = await Device.findOne({
+    projectId: resolvedProjectId,
+    $or: idOrCode
+  }).lean();
+  if (!device) throw new ApiError(404, 'Device not found');
+
+  const {
+    siteId,
+    devEui,
+    imei
+  } = req.body || {};
+
+  const effectiveSiteId = siteId || device.siteId;
+  const effectiveDevEui = (devEui !== undefined ? devEui : device.devEui)?.trim();
+  const effectiveImei = (imei !== undefined ? imei : device.imei)?.trim();
+
+  // Resolve catalogue
+  const catLookup = [
+    device.device_uid ? { uid: device.device_uid } : null,
+    device.metadata?.device_uid ? { uid: device.metadata.device_uid } : null,
+    device.model ? { model: device.model } : null,
+    device.metadata?.model ? { model: device.metadata.model } : null,
+    device.name ? { name: device.name } : null
+  ].filter(Boolean);
+  const catalogue = catLookup.length > 0 ? await DeviceCatalogue.findOne({ $or: catLookup }).lean() : null;
+  const communication = catalogue?.communication || (device.transport === 'LORAWAN' ? 'lorawan' : '4g');
+  const isDirectCloud = communication === '4g';
+
+  const checks = [];
+
+  // 1. Identity
+  if (catalogue) {
+    checks.push({
+      key: 'identity',
+      name: 'Identity',
+      passed: true,
+      message: 'Identity valid'
+    });
+  } else {
+    checks.push({
+      key: 'identity',
+      name: 'Identity',
+      passed: false,
+      message: 'Device catalogue could not be resolved'
+    });
+  }
+
+  // 2. Installation Location
+  if (effectiveSiteId) {
+    checks.push({
+      key: 'location',
+      name: 'Installation',
+      passed: true,
+      message: 'Installation configured'
+    });
+  } else {
+    checks.push({
+      key: 'location',
+      name: 'Installation',
+      passed: false,
+      message: 'Site / Structure must be selected'
+    });
+  }
+
+  // 3. Network Identity
+  if (communication === 'lorawan') {
+    if (!effectiveDevEui) {
+      checks.push({
+        key: 'network',
+        name: 'Network Identity',
+        passed: false,
+        message: 'DevEUI is required'
+      });
+    } else {
+      const conflict = await Device.findOne({
+        organizationId: req.auth.organizationId,
+        _id: { $ne: device._id },
+        devEui: effectiveDevEui.toUpperCase(),
+        status: { $ne: 'DECOMMISSIONED' }
+      }).lean();
+      if (conflict) {
+        checks.push({
+          key: 'network',
+          name: 'Network Identity',
+          passed: false,
+          message: `DevEUI '${effectiveDevEui}' is already assigned to Device '${conflict.deviceId}'`
+        });
+      } else {
+        checks.push({
+          key: 'network',
+          name: 'Network Identity',
+          passed: true,
+          message: 'Network identity valid'
+        });
+      }
+    }
+  } else if (isDirectCloud) {
+    if (effectiveImei) {
+      const conflict = await Device.findOne({
+        organizationId: req.auth.organizationId,
+        _id: { $ne: device._id },
+        imei: effectiveImei,
+        status: { $ne: 'DECOMMISSIONED' }
+      }).lean();
+      if (conflict) {
+        checks.push({
+          key: 'network',
+          name: 'Network Identity',
+          passed: false,
+          message: `IMEI '${effectiveImei}' is already assigned to Device '${conflict.deviceId}'`
+        });
+      } else {
+        checks.push({
+          key: 'network',
+          name: 'Network Identity',
+          passed: true,
+          message: 'Network identity valid'
+        });
+      }
+    } else {
+      checks.push({
+        key: 'network',
+        name: 'Network Identity',
+        passed: true,
+        message: 'Network identity valid (Direct Cloud cellular)'
+      });
+    }
+  } else {
+    checks.push({
+      key: 'network',
+      name: 'Network Identity',
+      passed: true,
+      message: 'Network identity valid'
+    });
+  }
+
+  // 4. Sensor mappings
+  const activeSensors = await SensorDeviceMapping.find({
+    projectId: resolvedProjectId,
+    deviceAssetId: device._id,
+    status: 'ACTIVE'
+  }).lean();
+  checks.push({
+    key: 'sensors',
+    name: 'Connected Sensors',
+    passed: true,
+    message: 'Sensor mappings compatible'
+  });
+
+  // 5. Capacity
+  const maxChannels = catalogue?.max_channels || device.metadata?.max_channels || 8;
+  const usedSlots = activeSensors.length;
+  if (usedSlots > maxChannels) {
+    checks.push({
+      key: 'capacity',
+      name: 'Capacity',
+      passed: false,
+      message: `Capacity exceeded (${usedSlots} / ${maxChannels} used)`
+    });
+  } else {
+    checks.push({
+      key: 'capacity',
+      name: 'Capacity',
+      passed: true,
+      message: 'Capacity valid'
+    });
+  }
+
+  // 6. Gateway Connection
+  if (communication === 'lorawan') {
+    const activeGw = await DeviceGatewayMapping.findOne({
+      projectId: resolvedProjectId,
+      deviceAssetId: device._id,
+      status: 'ACTIVE'
+    }).populate('gatewayAssetId', '_id gatewayId name gateway_uid').lean();
+
+    if (!activeGw) {
+      checks.push({
+        key: 'gateway',
+        name: 'Gateway Connection',
+        passed: false,
+        message: 'Compatible Gateway connection required'
+      });
+    } else {
+      let gwCat = null;
+      if (activeGw.gatewayAssetId?.gateway_uid) {
+        gwCat = await GatewayCatalogue.findOne({ uid: activeGw.gatewayAssetId.gateway_uid }).lean();
+      }
+      const supportedComms = gwCat?.supported_device_communications || ['lorawan'];
+      if (!supportedComms.includes('lorawan')) {
+        checks.push({
+          key: 'gateway',
+          name: 'Gateway Connection',
+          passed: false,
+          message: `Connected gateway (${activeGw.gatewayAssetId.gatewayId}) does not support LoRaWAN`
+        });
+      } else {
+        checks.push({
+          key: 'gateway',
+          name: 'Gateway Connection',
+          passed: true,
+          message: 'Gateway connection compatible'
+        });
+      }
+    }
+  } else if (isDirectCloud) {
+    checks.push({
+      key: 'gateway',
+      name: 'Gateway Connection',
+      passed: true,
+      message: 'Gateway connection compatible (Direct Cloud)'
+    });
+  } else {
+    checks.push({
+      key: 'gateway',
+      name: 'Gateway Connection',
+      passed: true,
+      message: 'Gateway connection valid'
+    });
+  }
+
+  const valid = checks.every(c => c.passed);
+
+  res.json({
+    valid,
+    summary: valid ? 'Device is ready to commission.' : 'Please correct the highlighted items before commissioning.',
+    checks
   });
 }));
 

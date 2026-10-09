@@ -63,16 +63,25 @@ sensorChannelSchema.index({ instrumentId: 1, code: 1 }, { unique: true });
 const deviceSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true },
   projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
+  siteId: { type: Schema.Types.ObjectId, ref: 'Site' },
+  zoneId: { type: Schema.Types.ObjectId, ref: 'Zone' },
+  coordinates: Schema.Types.Mixed,
   deviceId: { type: String, required: true },
   device_uid: String,
+  model: String,
   serial: String,
   name: { type: String, required: true },
   deviceType: { type: String, default: 'LOGGER' },
   transport: { type: String, default: '4G' },
+  devEui: { type: String, uppercase: true },
+  imei: String,
+  macAddress: { type: String, uppercase: true },
   firmware: String,
   apiKeyHash: String,
   apiKeyPrefix: String,
-  status: { type: String, enum: ['PLANNED', 'REGISTERED', 'ONLINE', 'OFFLINE', 'MAINTENANCE', 'DECOMMISSIONED'], default: 'PLANNED' },
+  status: { type: String, enum: ['PLANNED', 'REGISTERED', 'SETUP_IN_PROGRESS', 'COMMISSIONED', 'ONLINE', 'OFFLINE', 'MAINTENANCE', 'DECOMMISSIONED'], default: 'PLANNED' },
+  commissionedAt: Date,
+  commissionedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   healthGrade: { type: String, enum: ['H0', 'H1', 'H2', 'H3', 'H4'], default: 'H0' },
   lastSeenAt: Date,
   lastBatteryV: Number,
@@ -81,6 +90,9 @@ const deviceSchema = new Schema({
   metadata: { type: Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
 deviceSchema.index({ organizationId: 1, deviceId: 1 }, { unique: true });
+deviceSchema.index({ organizationId: 1, devEui: 1 }, { sparse: true });
+deviceSchema.index({ organizationId: 1, imei: 1 }, { sparse: true });
+deviceSchema.index({ organizationId: 1, macAddress: 1 }, { sparse: true });
 deviceSchema.index({ projectId: 1, deviceType: 1 });
 
 const calibrationVersionSchema = new Schema({
