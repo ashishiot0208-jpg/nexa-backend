@@ -67,6 +67,7 @@ const zoneSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true },
   projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
   siteId: { type: Schema.Types.ObjectId, ref: 'Site' },
+  parentId: { type: Schema.Types.ObjectId, ref: 'Site' },
   name: { type: String, required: true },
   code: String,
   type: { type: String, default: 'ZONE' },

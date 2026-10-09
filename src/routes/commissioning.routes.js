@@ -1176,6 +1176,10 @@ router.put('/projects/:projectId/commissioning/sensors/:instrumentId/setup', req
     depthM,
     orientationDeg,
     serial,
+    calibrationSource,
+    calibrationConfigured,
+    baselineMode,
+    baselineConfigured,
     channels = [],
     commission = false
   } = req.body;
@@ -1187,12 +1191,54 @@ router.put('/projects/:projectId/commissioning/sensors/:instrumentId/setup', req
   if (orientationDeg !== undefined) instrument.orientationDeg = orientationDeg;
   if (serial !== undefined && serial) instrument.serial = serial;
 
+  if (!instrument.metadata) instrument.metadata = {};
+  if (calibrationSource !== undefined) instrument.metadata.calibrationSource = calibrationSource;
+  if (calibrationConfigured !== undefined) instrument.metadata.calibrationConfigured = calibrationConfigured;
+  if (baselineMode !== undefined) instrument.metadata.baselineMode = baselineMode;
+  if (baselineConfigured !== undefined) instrument.metadata.baselineConfigured = baselineConfigured;
+  instrument.markModified('metadata');
+
   if (commission) {
+    // 1. Site selected validation
+    if (!siteId && !instrument.siteId) {
+      throw new ApiError(400, 'Cannot commission sensor: A Site / Structure must be selected.');
+    }
+
+    // 2. Measurement channels validation
+    const enabledChannels = channels.filter(c => c.enabled !== false);
+    if (enabledChannels.length === 0) {
+      throw new ApiError(400, 'Cannot commission sensor: At least one measurement channel must be enabled.');
+    }
+
+    // 3. Active SensorDeviceMapping validation
+    const activeMapping = await SensorDeviceMapping.findOne({
+      projectId: resolvedProjectId,
+      sensorAssetId: instrument._id,
+      status: 'ACTIVE'
+    });
+    if (!activeMapping) {
+      throw new ApiError(400, 'Cannot commission sensor: Sensor must be mapped to an active Logger Device.');
+    }
+
+    // 4. Calibration validation
+    const isCalibDone = calibrationConfigured === true || 
+      (channels.length > 0 && channels.every(c => c.calibration?.configured));
+    if (!isCalibDone && !instrument.metadata?.calibrationConfigured) {
+      throw new ApiError(400, 'Cannot commission sensor: Calibration source and parameters must be explicitly configured.');
+    }
+
+    // 5. Baseline validation
+    const isBaselineDone = baselineConfigured === true || 
+      (channels.length > 0 && channels.every(c => c.baseline?.configured));
+    if (!isBaselineDone && !instrument.metadata?.baselineConfigured) {
+      throw new ApiError(400, 'Cannot commission sensor: Baseline reference must be explicitly configured.');
+    }
+
     instrument.status = 'COMMISSIONED';
     instrument.commissionedAt = new Date();
     instrument.commissionedBy = req.auth.userId;
-  } else if (instrument.status === 'REGISTERED') {
-    instrument.status = 'INSTALLED';
+  } else if (instrument.status !== 'COMMISSIONED') {
+    instrument.status = 'SETUP_IN_PROGRESS';
   }
 
   await instrument.save();
@@ -1226,7 +1272,7 @@ router.put('/projects/:projectId/commissioning/sensors/:instrumentId/setup', req
   await audit({
     req,
     organizationId: req.auth.organizationId,
-    projectId,
+    projectId: resolvedProjectId,
     action: commission ? 'INSTRUMENT_COMMISSIONED' : 'INSTRUMENT_SETUP_UPDATED',
     resourceType: 'Instrument',
     resourceId: instrument._id,

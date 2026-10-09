@@ -15,7 +15,7 @@ const instrumentSchema = new Schema({
   coordinates: Schema.Types.Mixed,
   orientationDeg: Number,
   depthM: Number,
-  status: { type: String, enum: ['PLANNED', 'REGISTERED', 'COMMISSIONING', 'COMMISSIONED', 'MAINTENANCE', 'DECOMMISSIONED'], default: 'PLANNED' },
+  status: { type: String, enum: ['PLANNED', 'REGISTERED', 'COMMISSIONING', 'SETUP_IN_PROGRESS', 'COMMISSIONED', 'MAINTENANCE', 'DECOMMISSIONED'], default: 'PLANNED' },
   commissionedAt: Date,
   commissionedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   metadata: { type: Schema.Types.Mixed, default: {} }
@@ -33,8 +33,21 @@ const sensorChannelSchema = new Schema({
   rawUnit: String,
   engineeringUnit: String,
   sampleIntervalSec: { type: Number, default: 900 },
-  calibration: { scale: { type: Number, default: 1 }, offset: { type: Number, default: 0 }, version: { type: Number, default: 1 } },
-  baseline: { value: { type: Number, default: 0 }, capturedAt: Date, version: { type: Number, default: 1 } },
+  calibration: {
+    scale: { type: Number, default: 1 },
+    offset: { type: Number, default: 0 },
+    version: { type: Number, default: 1 },
+    source: { type: String, default: '' },
+    configured: { type: Boolean, default: false },
+    configuredAt: Date
+  },
+  baseline: {
+    value: { type: Number, default: 0 },
+    capturedAt: Date,
+    version: { type: Number, default: 1 },
+    configured: { type: Boolean, default: false },
+    configuredAt: Date
+  },
   qualityConfig: {
     physicalMin: Number,
     physicalMax: Number,

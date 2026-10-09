@@ -158,13 +158,33 @@ router.post('/projects', validate(createProjectSchema), asyncHandler(async (req,
 
   let parentId = null; let firstSite = null; let firstZone = null;
   const hierarchyList = (body.hierarchy && body.hierarchy.length > 0) ? body.hierarchy : [{ type: 'SITE', name: `${body.project.name} Site` }];
+  const seenZones = new Set();
   for (let i = 0; i < hierarchyList.length; i++) {
     const item = hierarchyList[i];
+    const trimmedName = (item.name || '').trim();
+    if (!trimmedName) continue;
     if (/ZONE|STRUCTURE|SLOPE|SECTION|CHAINAGE/i.test(item.type) && i > 0) {
-      const z = await Zone.create({ organizationId: project.organizationId, projectId: project._id, siteId: firstSite?._id, name: item.name, type: item.type.toUpperCase() });
+      const lower = trimmedName.toLowerCase();
+      if (seenZones.has(lower)) continue;
+      seenZones.add(lower);
+      const z = await Zone.create({
+        organizationId: project.organizationId,
+        projectId: project._id,
+        siteId: firstSite?._id,
+        parentId: firstSite?._id,
+        name: trimmedName,
+        type: item.type.toUpperCase()
+      });
       firstZone ||= z;
     } else {
-      const s = await Site.create({ organizationId: project.organizationId, projectId: project._id, name: item.name, type: item.type.toUpperCase(), parentId, level: i });
+      const s = await Site.create({
+        organizationId: project.organizationId,
+        projectId: project._id,
+        name: trimmedName,
+        type: item.type.toUpperCase(),
+        parentId,
+        level: i
+      });
       firstSite ||= s; parentId = s._id;
     }
   }
@@ -220,7 +240,10 @@ router.get('/projects/:projectId', requireProjectAccess, asyncHandler(async (req
     use_case_name: project.templateName || project.templateId?.name || project.useCaseTemplateId?.name || project.useCaseCode,
     dashboard_template_name: project.dashboardTemplateId?.name || null,
     rule_set_name: project.ruleSetId?.name || null,
-    hierarchy: [...sites.map((x) => ({ id: x._id, node_type: x.type, name: x.name, level: x.level })), ...zones.map((x) => ({ id: x._id, node_type: x.type, name: x.name, level: 999 }))],
+    hierarchy: [
+      ...sites.map((x) => ({ id: x._id, _id: x._id, node_type: x.type, name: x.name, level: x.level, parentId: x.parentId })),
+      ...zones.map((x) => ({ id: x._id, _id: x._id, node_type: x.type, name: x.name, level: 999, siteId: x.siteId, parentId: x.siteId || x.parentId }))
+    ],
     instruments: instruments.map((i) => ({ id: i._id, name: i.name, code: i.code, category: categories.get(i.catalogCode) || 'Engineering', catalogCode: i.catalogCode, status: i.status, serial: i.serial })),
     devices: devices.map((d) => ({ id: d._id, name: d.name, deviceId: d.deviceId, deviceType: d.deviceType, transport: d.transport, status: d.status, healthGrade: d.healthGrade, lastSeenAt: d.lastSeenAt })),
     _raw: { project, sites, zones }
