@@ -10,6 +10,8 @@ const projectSchema = new Schema({
   timezone: { type: String, default: 'Asia/Kolkata' },
   status: { type: String, enum: ['DRAFT', 'ACTIVE', 'ARCHIVED'], default: 'ACTIVE' },
   setupStatus: { type: String, enum: ['SETUP_REQUIRED', 'COMMISSIONING', 'COMMISSIONED'] },
+  commissioningCompletedAt: { type: Date },
+  commissioningCompletedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   templateId: { type: Schema.Types.ObjectId, ref: 'ProjectTemplate' },
   templateUid: String,
   templateName: String,

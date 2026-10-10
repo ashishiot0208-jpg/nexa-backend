@@ -5,13 +5,18 @@ import {
   Project, Instrument, Device, ProjectGateway, 
   SensorDeviceMapping, DeviceGatewayMapping, 
   Sensor, DeviceCatalogue, GatewayCatalogue, 
-  SensorChannel, Site, Zone 
+  SensorChannel, Site, Zone, User 
 } from '../models/index.js';
 import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from '../services/audit.service.js';
-import { randomToken, sha256 } from '../utils/crypto.js';
+import { 
+  validateProjectCommissioning, 
+  confirmProjectCommissioning, 
+  getDeviceCommissioningStatus, 
+  isDeviceCommissioned 
+} from '../services/project-commissioning.service.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -198,24 +203,93 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
   const totalGatewaysPlanned = gatewayProgress.reduce((sum, g) => sum + g.plannedQuantity, 0);
   const totalGatewaysRegistered = gatewayProgress.reduce((sum, g) => sum + g.registeredCount, 0);
 
-  // Active mapping statistics
-  const [activeSensorMappingsCount, activeDeviceMappingsCount] = await Promise.all([
-    SensorDeviceMapping.countDocuments({ projectId, status: 'ACTIVE' }),
-    DeviceGatewayMapping.countDocuments({ projectId, status: 'ACTIVE' })
+  // Active mapping statistics & commissioning counts
+  const [
+    actualSensorsRegistered,
+    actualDevices,
+    actualGatewaysRegistered,
+    activeSensorMappings, 
+    activeDeviceMappingsCount,
+    commissionedSensorsCount,
+    commissionedGatewaysCount
+  ] = await Promise.all([
+    Instrument.countDocuments({ projectId, status: { $ne: 'DECOMMISSIONED' } }),
+    Device.find({ projectId, status: { $ne: 'DECOMMISSIONED' } }).lean(),
+    ProjectGateway.countDocuments({ projectId, status: { $ne: 'DECOMMISSIONED' } }),
+    SensorDeviceMapping.find({ projectId, status: 'ACTIVE' }).lean(),
+    DeviceGatewayMapping.countDocuments({ projectId, status: 'ACTIVE' }),
+    Instrument.countDocuments({ projectId, status: 'COMMISSIONED' }),
+    ProjectGateway.countDocuments({ projectId, status: 'COMMISSIONED' })
   ]);
+
+  const actualDevicesRegistered = actualDevices.length;
+  const commissionedDevicesCount = actualDevices.filter(d => isDeviceCommissioned(d)).length;
+  const activeSensorMappingsCount = activeSensorMappings.length;
+
+  // Safe repair: If project was incorrectly marked COMMISSIONED while in-use devices are uncommissioned
+  if (project.setupStatus === 'COMMISSIONED') {
+    const activeSensors = await Instrument.find({ projectId, status: { $ne: 'DECOMMISSIONED' } }).select('_id').lean();
+    const activeSensorIdSet = new Set(activeSensors.map(s => s._id.toString()));
+    const inUseDevIds = new Set();
+    for (const m of activeSensorMappings) {
+      if (activeSensorIdSet.has(m.sensorAssetId.toString())) {
+        inUseDevIds.add(m.deviceAssetId.toString());
+      }
+    }
+    const uncommissionedInUse = actualDevices.some(d => inUseDevIds.has(d._id.toString()) && !isDeviceCommissioned(d));
+    if (uncommissionedInUse) {
+      await Project.updateOne(
+        { _id: projectId },
+        {
+          $set: { setupStatus: 'COMMISSIONING' },
+          $unset: { commissioningCompletedAt: 1, commissioningCompletedBy: 1 }
+        }
+      );
+      project.setupStatus = 'COMMISSIONING';
+      project.commissioningCompletedAt = null;
+      project.commissioningCompletedBy = null;
+    }
+  }
+
+  let completedByUser = null;
+  if (project.commissioningCompletedBy) {
+    completedByUser = await User.findById(project.commissioningCompletedBy).select('displayName email').lean();
+  }
 
   res.json({
     projectId,
     projectName: project.name,
     projectCode: project.code,
-    setupStatus: project.setupStatus || null,
+    status: project.status || 'ACTIVE',
+    setupStatus: project.setupStatus || 'SETUP_REQUIRED',
+    commissioningCompletedAt: project.commissioningCompletedAt || null,
+    commissioningCompletedBy: project.commissioningCompletedBy || null,
+    completedByUserName: completedByUser?.displayName || completedByUser?.email || null,
     sensorProgress,
     deviceProgress,
     gatewayProgress,
     totals: {
-      sensors: { planned: totalSensorsPlanned, registered: totalSensorsRegistered, mapped: activeSensorMappingsCount },
-      devices: { planned: totalDevicesPlanned, registered: totalDevicesRegistered, mapped: activeDeviceMappingsCount },
-      gateways: { planned: totalGatewaysPlanned, registered: totalGatewaysRegistered }
+      sensors: {
+        planned: totalSensorsPlanned,
+        registered: actualSensorsRegistered,
+        commissioned: commissionedSensorsCount,
+        mapped: activeSensorMappingsCount
+      },
+      devices: {
+        planned: totalDevicesPlanned,
+        registered: actualDevicesRegistered,
+        commissioned: commissionedDevicesCount,
+        mapped: activeDeviceMappingsCount
+      },
+      gateways: {
+        planned: totalGatewaysPlanned,
+        registered: actualGatewaysRegistered,
+        commissioned: commissionedGatewaysCount
+      },
+      mappings: {
+        sensorDevice: activeSensorMappingsCount,
+        deviceGateway: activeDeviceMappingsCount
+      }
     }
   });
 }));
@@ -456,6 +530,10 @@ router.get('/projects/:projectId/commissioning/devices', requireProjectAccess, a
       connectedSensors,
       availableSlots,
       status: d.status,
+      commissioningStatus: getDeviceCommissioningStatus(d),
+      runtimeStatus: d.runtimeStatus || (['ONLINE', 'OFFLINE'].includes(d.status) ? d.status : 'OFFLINE'),
+      isCommissioned: isDeviceCommissioned(d),
+      isInUse: connectedSensors > 0,
       isDirectCloud,
       isGatewayAssigned: !!gwMapping,
       assignedGateway: gwMapping?.gatewayAssetId ? {
@@ -538,6 +616,8 @@ router.post('/projects/:projectId/commissioning/devices/bulk-register', requireP
       apiKeyHash: sha256(apiKey),
       apiKeyPrefix: apiKey.slice(0, 10),
       status: 'REGISTERED',
+      commissioningStatus: 'REGISTERED',
+      runtimeStatus: 'OFFLINE',
       metadata: {
         device_uid: cat.uid,
         communication: cat.communication,
@@ -1604,10 +1684,12 @@ router.put('/projects/:projectId/commissioning/devices/:deviceId/setup', require
     }
 
     device.status = 'COMMISSIONED';
+    device.commissioningStatus = 'COMMISSIONED';
     device.commissionedAt = new Date();
     device.commissionedBy = req.auth.userId;
-  } else if (device.status !== 'COMMISSIONED') {
+  } else if (device.commissioningStatus !== 'COMMISSIONED' && device.status !== 'COMMISSIONED') {
     device.status = 'SETUP_IN_PROGRESS';
+    device.commissioningStatus = 'SETUP_IN_PROGRESS';
   }
 
   await device.save();
@@ -2330,4 +2412,26 @@ router.post('/projects/:projectId/commissioning/gateways/:gatewayId/verify', req
   });
 }));
 
+/**
+ * 18. POST /projects/:projectId/commissioning/verify
+ * Runs read-only Project commissioning verification checks.
+ * Does NOT mutate Project.setupStatus, commissioningCompletedAt, assets, mappings, or plannedConfiguration.
+ */
+router.post('/projects/:projectId/commissioning/verify', requireProjectAccess, asyncHandler(async (req, res) => {
+  const result = await validateProjectCommissioning(req.params.projectId);
+  res.json(result);
+}));
+
+/**
+ * 19. POST /projects/:projectId/commissioning/confirm
+ * Final persistent confirmation of Project commissioning.
+ * Re-validates server-side, sets Project.setupStatus = COMMISSIONED,
+ * writes commissioningCompletedAt, commissioningCompletedBy, and records audit.
+ */
+router.post('/projects/:projectId/commissioning/confirm', requireProjectAccess, asyncHandler(async (req, res) => {
+  const result = await confirmProjectCommissioning(req.params.projectId, req.auth.userId, req);
+  res.json(result);
+}));
+
 export default router;
+

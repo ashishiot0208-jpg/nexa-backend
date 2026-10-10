@@ -80,6 +80,8 @@ const deviceSchema = new Schema({
   apiKeyHash: String,
   apiKeyPrefix: String,
   status: { type: String, enum: ['PLANNED', 'REGISTERED', 'SETUP_IN_PROGRESS', 'COMMISSIONED', 'ONLINE', 'OFFLINE', 'MAINTENANCE', 'DECOMMISSIONED'], default: 'PLANNED' },
+  commissioningStatus: { type: String, enum: ['PLANNED', 'REGISTERED', 'SETUP_IN_PROGRESS', 'COMMISSIONED', 'DECOMMISSIONED'], default: 'REGISTERED' },
+  runtimeStatus: { type: String, enum: ['ONLINE', 'OFFLINE', 'UNKNOWN'], default: 'OFFLINE' },
   commissionedAt: Date,
   commissionedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   healthGrade: { type: String, enum: ['H0', 'H1', 'H2', 'H3', 'H4'], default: 'H0' },
