@@ -49,6 +49,8 @@ const derivedReadingSchema = new Schema({
   metadata: { type: Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
 derivedReadingSchema.index({ projectId: 1, instrumentId: 1, parameterCode: 1, observedAt: -1 });
+derivedReadingSchema.index({ projectId: 1, instrumentId: 1, observedAt: -1 });
+derivedReadingSchema.index({ projectId: 1, observedAt: -1 });
 
 const deviceTelemetrySchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true },
