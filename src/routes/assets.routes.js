@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { BaselineVersion, CalibrationVersion, Device, Instrument, InstrumentCatalog, SensorChannel, Project, Sensor, SensorDeviceMapping } from '../models/index.js';
+import { BaselineVersion, CalibrationVersion, Device, Instrument, InstrumentCatalog, LatestState, SensorChannel, Project, Sensor, SensorDeviceMapping } from '../models/index.js';
 import { requireAuth, requireProjectAccess, ensureProjectAccess } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
@@ -15,10 +15,11 @@ router.get('/projects/:projectId/instruments', requireProjectAccess, asyncHandle
   const rows = await Instrument.find({ projectId }).sort({ code: 1, name: 1 }).lean();
   
   const sensorUids = [...new Set(rows.map(x => x.sensor_uid || x.catalogCode).filter(Boolean))];
-  const [catalogues, legacyCatalogues, activeMappings] = await Promise.all([
+  const [catalogues, legacyCatalogues, activeMappings, allLatestStates] = await Promise.all([
     Sensor.find({ uid: { $in: sensorUids } }).lean(),
     InstrumentCatalog.find({ code: { $in: sensorUids } }).lean(),
-    SensorDeviceMapping.find({ projectId, status: 'ACTIVE' }).populate('deviceAssetId', 'deviceId name status transport').lean()
+    SensorDeviceMapping.find({ projectId, status: 'ACTIVE' }).populate('deviceAssetId', 'deviceId name status transport').lean(),
+    LatestState.find({ projectId }).lean()
   ]);
 
   const catMap = new Map();
@@ -27,6 +28,15 @@ router.get('/projects/:projectId/instruments', requireProjectAccess, asyncHandle
 
   const mappingMap = new Map();
   activeMappings.forEach(m => mappingMap.set(m.sensorAssetId.toString(), m));
+
+  const latestStateMap = new Map();
+  allLatestStates.forEach(s => {
+    const key = s.instrumentId ? s.instrumentId.toString() : '';
+    if (key) {
+      if (!latestStateMap.has(key)) latestStateMap.set(key, []);
+      latestStateMap.get(key).push(s);
+    }
+  });
 
   const withChannels = await Promise.all(rows.map(async (x) => {
     const channels = await SensorChannel.find({ instrumentId: x._id }).lean();
@@ -47,7 +57,8 @@ router.get('/projects/:projectId/instruments', requireProjectAccess, asyncHandle
       signal_type: cat.signal_type || x.metadata?.signal_type || '—',
       activeDevice,
       activeMapping: mapping ? { slot: mapping.connection?.slot, mode: mapping.connection?.mode } : null,
-      channels
+      channels,
+      latestStates: latestStateMap.get(x._id.toString()) || []
     };
   }));
 

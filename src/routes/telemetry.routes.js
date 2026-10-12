@@ -197,21 +197,102 @@ router.get('/projects/:projectId/telemetry', requireAuth, requireProjectAccess, 
 }));
 
 router.get('/projects/:projectId/trends', requireAuth, requireProjectAccess, asyncHandler(async (req, res) => {
-  const from = req.query.from ? new Date(String(req.query.from)) : new Date(Date.now() - 24 * 3600000);
-  const to = req.query.to ? new Date(String(req.query.to)) : new Date();
+  const { from, to } = resolveTelemetryTimeRange(req.query);
+  const timeQuery = from ? { $gte: from, $lte: to } : { $lte: to };
   const parameters = String(req.query.parameter || '').split(',').filter(Boolean);
   if (!parameters.length) throw new ApiError(400, 'parameter query is required');
-  const bucket = String(req.query.bucket || '15m');
+  const bucket = String(req.query.bucket || 'raw');
+  
+  const match = { projectId: new mongoose.Types.ObjectId(req.params.projectId), observedAt: timeQuery, parameterCode: { $in: parameters } };
+  
+  if (req.query.instrumentId || req.query.instrumentIds) {
+    const instParam = String(req.query.instrumentId || req.query.instrumentIds);
+    const ids = instParam.split(',').filter(Boolean);
+    if (ids.length > 1) {
+      match.instrumentId = { $in: ids.filter(id => mongoose.Types.ObjectId.isValid(id)).map(id => new mongoose.Types.ObjectId(id)) };
+    } else if (ids.length === 1) {
+      if (mongoose.Types.ObjectId.isValid(ids[0])) {
+        match.instrumentId = new mongoose.Types.ObjectId(ids[0]);
+      } else {
+        const { Instrument } = await import('../models/index.js');
+        const inst = await Instrument.findOne({ projectId: req.params.projectId, code: ids[0] }).lean();
+        if (inst) match.instrumentId = inst._id;
+      }
+    }
+  }
+
+  // 1. Raw samples (un-aggregated, chronologically ASC)
+  if (bucket === 'raw' || bucket === 'none') {
+    const readings = await DerivedReading.find(match)
+      .sort({ observedAt: 1 })
+      .limit(10000)
+      .populate('instrumentId', 'code name typeName')
+      .populate('channelId', 'code label parameterCode engineeringUnit rawUnit baseline')
+      .populate('rawReadingId', 'rawValue rawUnit quality sourceMetadata sampleTime')
+      .lean();
+
+    const items = readings.map((r) => ({
+      parameterCode: r.parameterCode,
+      instrumentId: r.instrumentId?._id || r.instrumentId,
+      instrumentCode: r.instrumentId?.code || '',
+      instrumentName: r.instrumentId?.name || '',
+      instrumentTypeName: r.instrumentId?.typeName || '',
+      channelLabel: r.channelId?.label || r.parameterCode,
+      time: r.observedAt,
+      value: r.value,
+      avg: r.value,
+      rawValue: r.rawReadingId?.rawValue !== undefined && r.rawReadingId?.rawValue !== null ? r.rawReadingId.rawValue : null,
+      rawUnit: r.rawReadingId?.rawUnit || r.channelId?.rawUnit || '',
+      deltaFromBaseline: r.deltaFromBaseline,
+      ratePerHour: r.ratePerHour,
+      quality: r.quality || 'VALID',
+      unit: r.unit || r.channelId?.engineeringUnit || '',
+      baseline: (r.channelId?.baseline?.configured === true && Number.isFinite(r.channelId?.baseline?.value)) ? r.channelId.baseline.value : null,
+      source: r.metadata?.source || r.rawReadingId?.sourceMetadata?.source || 'Simulator'
+    }));
+
+    return res.json({ bucket, from, to, items });
+  }
+
+  // 2. Aggregated samples (hourly average, daily average, 15m)
   const units = { '5m': { unit: 'minute', binSize: 5 }, '15m': { unit: 'minute', binSize: 15 }, '1h': { unit: 'hour', binSize: 1 }, '1d': { unit: 'day', binSize: 1 } };
-  const b = units[bucket] || units['15m'];
-  const match = { projectId: new mongoose.Types.ObjectId(req.params.projectId), observedAt: { $gte: from, $lte: to }, parameterCode: { $in: parameters } };
-  if (req.query.instrumentId) match.instrumentId = new mongoose.Types.ObjectId(String(req.query.instrumentId));
+  const b = units[bucket] || units['1h'];
   const data = await DerivedReading.aggregate([
     { $match: match },
     { $group: { _id: { parameterCode: '$parameterCode', instrumentId: '$instrumentId', bucket: { $dateTrunc: { date: '$observedAt', unit: b.unit, binSize: b.binSize } } }, avg: { $avg: '$value' }, min: { $min: '$value' }, max: { $max: '$value' }, count: { $sum: 1 }, unit: { $last: '$unit' } } },
     { $sort: { '_id.bucket': 1 } }
   ]);
-  res.json({ bucket, from, to, items: data.map((x) => ({ parameterCode: x._id.parameterCode, instrumentId: x._id.instrumentId, time: x._id.bucket, avg: x.avg, min: x.min, max: x.max, count: x.count, unit: x.unit })) });
+
+  const { Instrument } = await import('../models/index.js');
+  const distinctInstIds = [...new Set(data.map(d => String(d._id.instrumentId)).filter(Boolean))];
+  const instMap = new Map();
+  if (distinctInstIds.length) {
+    const instDocs = await Instrument.find({ _id: { $in: distinctInstIds } }, 'code name typeName').lean();
+    for (const d of instDocs) instMap.set(String(d._id), d);
+  }
+
+  res.json({
+    bucket,
+    from,
+    to,
+    items: data.map((x) => {
+      const inst = instMap.get(String(x._id.instrumentId));
+      return {
+        parameterCode: x._id.parameterCode,
+        instrumentId: x._id.instrumentId,
+        instrumentCode: inst?.code || '',
+        instrumentName: inst?.name || '',
+        instrumentTypeName: inst?.typeName || '',
+        time: x._id.bucket,
+        value: x.avg,
+        avg: x.avg,
+        min: x.min,
+        max: x.max,
+        count: x.count,
+        unit: x.unit
+      };
+    })
+  });
 }));
 
 router.get('/projects/:projectId/telemetry/export.csv', requireAuth, requireProjectAccess, asyncHandler(async (req, res) => {
@@ -219,13 +300,19 @@ router.get('/projects/:projectId/telemetry/export.csv', requireAuth, requireProj
   const timeQuery = from ? { $gte: from, $lte: to } : { $lte: to };
 
   const q = { projectId: new mongoose.Types.ObjectId(req.params.projectId), observedAt: timeQuery };
-  if (req.query.instrumentId) {
-    if (mongoose.Types.ObjectId.isValid(req.query.instrumentId)) {
-      q.instrumentId = new mongoose.Types.ObjectId(String(req.query.instrumentId));
-    } else {
-      const { Instrument } = await import('../models/index.js');
-      const inst = await Instrument.findOne({ projectId: req.params.projectId, code: req.query.instrumentId }).lean();
-      if (inst) q.instrumentId = inst._id;
+  if (req.query.instrumentId || req.query.instrumentIds) {
+    const instParam = String(req.query.instrumentId || req.query.instrumentIds);
+    const ids = instParam.split(',').filter(Boolean);
+    if (ids.length > 1) {
+      q.instrumentId = { $in: ids.filter(id => mongoose.Types.ObjectId.isValid(id)).map(id => new mongoose.Types.ObjectId(id)) };
+    } else if (ids.length === 1) {
+      if (mongoose.Types.ObjectId.isValid(ids[0])) {
+        q.instrumentId = new mongoose.Types.ObjectId(ids[0]);
+      } else {
+        const { Instrument } = await import('../models/index.js');
+        const inst = await Instrument.findOne({ projectId: req.params.projectId, code: ids[0] }).lean();
+        if (inst) q.instrumentId = inst._id;
+      }
     }
   }
   if (req.query.parameter) q.parameterCode = { $in: String(req.query.parameter).split(',') };

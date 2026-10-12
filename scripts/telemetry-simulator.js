@@ -51,12 +51,21 @@ const DEVICE_PROFILES = {
   'SNRS485-2026-0001': {
     defaultSlot: 1,
     defaultGateway: 'GWLR-2026-0001',
-    description: 'Automatic Inclinometer (INC-2026-0001)',
-    generateValues: (step) => ({
-      x_displacement: Number((1.25 + Math.sin(step * 0.2) * 0.08).toFixed(3)),
-      y_displacement: Number((-0.32 + Math.cos(step * 0.2) * 0.05).toFixed(3)),
-      temperature: Number((27.4 + Math.sin(step * 0.1) * 0.3).toFixed(2))
-    })
+    description: 'Automatic Inclinometer (INC-2026-0001 / INC-2026-0002)',
+    generateValues: (step, targetSlot = 1) => {
+      if (Number(targetSlot) === 2) {
+        return {
+          x_displacement: Number((2.45 + Math.sin(step * 0.25) * 0.12).toFixed(3)),
+          y_displacement: Number((-0.85 + Math.cos(step * 0.25) * 0.08).toFixed(3)),
+          temperature: Number((26.8 + Math.sin(step * 0.15) * 0.25).toFixed(2))
+        };
+      }
+      return {
+        x_displacement: Number((1.25 + Math.sin(step * 0.2) * 0.08).toFixed(3)),
+        y_displacement: Number((-0.32 + Math.cos(step * 0.2) * 0.05).toFixed(3)),
+        temperature: Number((27.4 + Math.sin(step * 0.1) * 0.3).toFixed(2))
+      };
+    }
   },
   'DLVW08-2026-0001': {
     defaultSlot: 1,
@@ -71,9 +80,9 @@ const DEVICE_PROFILES = {
 
 let stepCount = 0;
 
-async function sendPacket() {
+async function sendPacket(customTimestamp) {
   stepCount += 1;
-  const now = new Date();
+  const now = customTimestamp || new Date();
   const profile = DEVICE_PROFILES[deviceCode];
 
   let values;
@@ -86,7 +95,7 @@ async function sendPacket() {
       process.exit(1);
     }
   } else if (profile) {
-    values = profile.generateValues(stepCount);
+    values = profile.generateValues(stepCount, slot);
   } else {
     // Generic fallback development values
     values = {
@@ -137,18 +146,19 @@ async function sendPacket() {
 }
 
 async function run() {
-  console.log(`Device:      ${deviceCode}`);
-  console.log(`Gateway:     ${gatewayCode || 'None'}`);
-  console.log(`Slot:        ${slot}`);
-  console.log(`Target:      ${targetUrl}`);
-  console.log(`Mode:        ${isOnce ? 'Single packet (--once)' : `Continuous (${intervalSec}s interval)`}`);
-
-  await sendPacket();
+  const count = Math.max(1, Number(getArg('count', '1')));
 
   if (isOnce) {
-    console.log('\n[SIMULATOR] Completed single packet transmission.');
+    for (let i = 0; i < count; i++) {
+      const offsetMs = (count - 1 - i) * 5 * 60 * 1000;
+      const ts = new Date(Date.now() - offsetMs);
+      await sendPacket(ts);
+    }
+    console.log(`\n[SIMULATOR] Completed ${count} packet transmission(s).`);
     process.exit(0);
   }
+
+  await sendPacket();
 
   console.log(`\nRunning continuously every ${intervalSec}s. Press Ctrl+C to stop.`);
   setInterval(sendPacket, intervalSec * 1000);
