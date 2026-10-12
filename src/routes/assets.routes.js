@@ -6,6 +6,7 @@ import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from '../services/audit.service.js';
 import { randomToken, sha256 } from '../utils/crypto.js';
+import { getInstrumentOperationalSummary } from '../services/instrument-summary.service.js';
 
 const router = Router(); router.use(requireAuth);
 
@@ -63,9 +64,10 @@ router.post('/projects/:projectId/instruments', requireProjectAccess, asyncHandl
 }));
 
 router.get('/instruments/:id', asyncHandler(async (req, res) => {
-  const instrument = await Instrument.findOne({ _id: req.params.id, organizationId: req.auth.organizationId }).lean(); if (!instrument) throw new ApiError(404, 'Instrument not found');
-  await ensureProjectAccess(req, instrument.projectId);
-  const channels = await SensorChannel.find({ instrumentId: instrument._id }).lean(); res.json({ instrument, channels });
+  const summary = await getInstrumentOperationalSummary(req.params.id, req.auth.organizationId);
+  if (!summary) throw new ApiError(404, 'Instrument not found');
+  await ensureProjectAccess(req, summary.instrument.projectId);
+  res.json(summary);
 }));
 
 router.post('/instruments/:id/calibrations', asyncHandler(async (req, res) => {

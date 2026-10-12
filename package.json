@@ -9,7 +9,8 @@
     "start": "node src/server.js",
     "seed": "node src/seed/seed.js",
     "check": "node scripts/check-syntax.js",
-    "mongo:local": "node scripts/start-local-mongo.js"
+    "mongo:local": "node scripts/start-local-mongo.js",
+    "telemetry:simulate": "node scripts/telemetry-simulator.js"
   },
   "engines": {
     "node": ">=20.0.0"

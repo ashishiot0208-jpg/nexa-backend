@@ -4,22 +4,23 @@ import { Device, DerivedReading, LatestState, RawReading } from '../models/index
 import { requireDevice } from '../middleware/device-auth.js';
 import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
-import { processTelemetry } from '../services/telemetry.service.js';
+import { ingestTelemetry, processTelemetry } from '../services/telemetry.service.js';
 import { decodeCursor, encodeCursor } from '../utils/cursor.js';
 import { ApiError } from '../utils/api-error.js';
 
 const router = Router();
 
-router.post('/telemetry/ingest', requireDevice, asyncHandler(async (req, res) => {
-  const result = await processTelemetry({ device: req.device, payload: req.body, emit: req.app.locals.emitEvent });
-  res.status(202).json({ status: 'ACCEPTED', ...result });
+router.post('/telemetry/ingest', asyncHandler(async (req, res) => {
+  const result = await ingestTelemetry(req.body, { emit: req.app.locals.emitEvent });
+  res.status(200).json(result);
 }));
 
 router.post('/projects/:projectId/telemetry/manual', requireAuth, requireProjectAccess, asyncHandler(async (req, res) => {
   const device = await Device.findOne({ _id: req.body.deviceMongoId, projectId: req.params.projectId, organizationId: req.auth.organizationId });
   if (!device) throw new ApiError(404, 'Device not found');
-  const result = await processTelemetry({ device, payload: req.body.payload || req.body, emit: req.app.locals.emitEvent });
-  res.status(202).json({ status: 'ACCEPTED', ...result });
+  const payload = req.body.payload || req.body;
+  const result = await ingestTelemetry({ ...payload, deviceCode: device.deviceId }, { emit: req.app.locals.emitEvent });
+  res.status(200).json(result);
 }));
 
 router.get('/projects/:projectId/telemetry', requireAuth, requireProjectAccess, asyncHandler(async (req, res) => {

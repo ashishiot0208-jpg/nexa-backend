@@ -1,7 +1,7 @@
 import mqtt from 'mqtt';
 import { env } from '../config/env.js';
 import { Device } from '../models/index.js';
-import { processTelemetry } from './telemetry.service.js';
+import { ingestTelemetry } from './telemetry.service.js';
 
 export function startMqttIngestion({ emit = () => {} } = {}) {
   if (!env.enableMqtt) return null;
@@ -19,9 +19,7 @@ export function startMqttIngestion({ emit = () => {} } = {}) {
       const parts = topic.split('/');
       const deviceId = parts.at(-2);
       const payload = JSON.parse(payloadBuffer.toString('utf8'));
-      const device = await Device.findOne({ deviceId });
-      if (!device) throw new Error(`Unknown device ${deviceId}`);
-      await processTelemetry({ device, payload: { ...payload, deviceId }, emit });
+      await ingestTelemetry({ ...payload, deviceCode: payload.deviceCode || payload.deviceId || deviceId }, { emit, source: 'DEVICE' });
     } catch (err) {
       console.error('[mqtt] ingest failed:', err.message);
     }

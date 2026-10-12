@@ -1,12 +1,13 @@
 import { DerivedReading } from '../models/index.js';
 
-export async function deriveChannelReading({ rawReading, channel }) {
+export async function deriveChannelReading({ rawReading, channel, sourceTag = 'DEVICE' }) {
   const previous = await DerivedReading.findOne({ channelId: channel._id }).sort({ observedAt: -1 }).lean();
-  const scale = channel.calibration?.scale ?? 1;
-  const offset = channel.calibration?.offset ?? 0;
-  const baseline = channel.baseline?.value ?? 0;
+  const scale = Number.isFinite(channel.calibration?.scale) ? channel.calibration.scale : 1;
+  const offset = Number.isFinite(channel.calibration?.offset) ? channel.calibration.offset : 0;
   const value = Number(rawReading.rawValue) * scale + offset;
-  const deltaFromBaseline = value - baseline;
+  const deltaFromBaseline = channel.baseline?.configured === true
+    ? value - (channel.baseline?.value ?? 0)
+    : null;
   let ratePerHour = null;
   let accelerationPerHour2 = null;
   if (previous && rawReading.sampleTime > previous.observedAt) {
@@ -33,7 +34,10 @@ export async function deriveChannelReading({ rawReading, channel }) {
     baselineVersion: channel.baseline?.version || 1,
     formulaVersion: '1.0',
     revision: 1,
-    sourceReadingIds: [rawReading._id]
+    sourceReadingIds: [rawReading._id],
+    metadata: {
+      source: rawReading.sourceMetadata?.source || sourceTag
+    }
   });
 }
 

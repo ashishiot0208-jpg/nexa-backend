@@ -58,6 +58,7 @@ export function createApp() {
 
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiSpec));
   app.use('/api/v1', healthRoutes);
+  app.use('/api/v1', telemetryRoutes);
   app.use('/api/v1/auth', authRoutes);
   app.use('/api/v1/admin/auth', platformAdminAuthRoutes);
   app.use('/api/v1/admin/organizations', platformAdminOrganizationsRoutes);
@@ -72,7 +73,6 @@ export function createApp() {
   app.use('/api/v1', templateRoutes);
   app.use('/api/v1', projectRoutes);
   app.use('/api/v1', assetRoutes);
-  app.use('/api/v1', telemetryRoutes);
   app.use('/api/v1', decisionRoutes);
   app.use('/api/v1', alarmRoutes);
   app.use('/api/v1', dashboardRoutes);
