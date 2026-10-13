@@ -17,6 +17,7 @@ import {
   Site,
   Zone
 } from '../models/index.js';
+import { resolveApplicableRule, evaluateSeverity } from './severity.service.js';
 
 /**
  * Builds the canonical operational summary for an instrument.
@@ -204,18 +205,40 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
   const quality = latestDerived?.quality || (latestRaw?.quality && latestRaw.quality !== 'PENDING' ? latestRaw.quality : 'NOT EVALUATED');
 
   // S-Level (Geotechnical / Engineering Severity):
-  // Check if project has an active RuleSet
-  const project = await Project.findById(instrument.projectId).lean();
   let severity = 'NOT EVALUATED';
-  if (project?.ruleSetId) {
-    const ruleSet = await RuleSet.findById(project.ruleSetId).lean();
-    if (ruleSet && ['APPROVED', 'ACTIVE'].includes(ruleSet.status)) {
-      const decision = await DecisionSnapshot.findOne({ instrumentId: instrument._id })
-        .sort({ evaluatedAt: -1 })
-        .lean();
-      if (decision?.severity) {
-        severity = decision.severity;
+  if (latestDerived?.severity?.evaluated && latestDerived.severity.level) {
+    severity = latestDerived.severity.level;
+  } else if (displayChannel && latestDerived) {
+    const applicableRule = await resolveApplicableRule({
+      projectId: instrument.projectId,
+      instrumentId: instrument._id,
+      catalogCode: instrument.catalogCode,
+      parameterCode: displayChannel.parameterCode
+    });
+    if (applicableRule) {
+      const sev = evaluateSeverity({
+        instrument,
+        channel: displayChannel,
+        derivedReading: latestDerived,
+        quality: latestDerived.quality,
+        applicableRule
+      });
+      if (sev.evaluated) {
+        severity = sev.level;
       }
+    }
+  }
+
+  // If still not evaluated, check LatestState for explicit evaluated severity
+  if (severity === 'NOT EVALUATED' && displayChannel) {
+    const ls = await LatestState.findOne({
+      instrumentId: instrument._id,
+      parameterCode: displayChannel.parameterCode
+    }).lean();
+    if (ls?.severityDetails?.evaluated && ls.severityDetails.level) {
+      severity = ls.severityDetails.level;
+    } else if (ls?.severity && ['S0', 'S1', 'S2', 'S3', 'S4'].includes(ls.severity) && ls.severityDetails?.evaluated) {
+      severity = ls.severity;
     }
   }
 
@@ -262,6 +285,8 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
       ratePerHour: d ? d.ratePerHour : null,
       accelerationPerHour2: d ? d.accelerationPerHour2 : null,
       quality: d ? d.quality : 'NOT EVALUATED',
+      severity: d?.severity?.evaluated ? d.severity.level : 'NOT EVALUATED',
+      severityDetails: d?.severity || null,
       observedAt: d ? d.observedAt : null,
       calibration: {
         configured: ch.calibration?.configured === true,

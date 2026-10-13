@@ -46,6 +46,17 @@ const derivedReadingSchema = new Schema({
   formulaVersion: { type: String, default: '1.0' },
   revision: { type: Number, default: 1 },
   sourceReadingIds: [{ type: Schema.Types.ObjectId, ref: 'RawReading' }],
+  severity: {
+    evaluated: { type: Boolean, default: false },
+    level: { type: String, default: 'NOT_EVALUATED' },
+    ruleId: { type: Schema.Types.ObjectId, ref: 'EngineeringSeverityRule' },
+    ruleVersion: Number,
+    metric: String,
+    evaluatedValue: Number,
+    unit: String,
+    evaluatedAt: Date,
+    reason: String
+  },
   metadata: { type: Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
 derivedReadingSchema.index({ projectId: 1, instrumentId: 1, parameterCode: 1, observedAt: -1 });
@@ -79,7 +90,18 @@ const latestStateSchema = new Schema({
   unit: String,
   quality: String,
   ratePerHour: Number,
-  severity: { type: String, default: 'S0' },
+  severity: { type: String, default: 'NOT_EVALUATED' },
+  severityDetails: {
+    evaluated: Boolean,
+    level: String,
+    ruleId: { type: Schema.Types.ObjectId, ref: 'EngineeringSeverityRule' },
+    ruleVersion: Number,
+    metric: String,
+    evaluatedValue: Number,
+    unit: String,
+    evaluatedAt: Date,
+    reason: String
+  },
   decisionId: { type: Schema.Types.ObjectId, ref: 'DecisionSnapshot' }
 }, { timestamps: true });
 latestStateSchema.index({ instrumentId: 1, parameterCode: 1 }, { unique: true });

@@ -13,6 +13,7 @@ import {
 } from '../models/index.js';
 import { evaluateQuality } from './quality.service.js';
 import { deriveChannelReading, deriveCrossChannelMetrics } from './engineering.service.js';
+import { resolveApplicableRule, evaluateSeverity } from './severity.service.js';
 import { evaluateRules } from './rule.service.js';
 import { createDecision } from './decision.service.js';
 import { recordDeviceHealth } from './health.service.js';
@@ -357,8 +358,31 @@ export async function ingestTelemetry(packet, { emit = () => {}, source = null }
   const cross = await deriveCrossChannelMetrics(derived);
   const allDerived = [...derived, ...cross];
 
-  // 11. Update LatestState for every derived measurement
+  // 11. Centralized Engineering Severity Evaluation & LatestState Update
+  const derivedChannelIds = allDerived.map(r => r.channelId).filter(Boolean);
+  const derivedChannels = await SensorChannel.find({ _id: { $in: derivedChannelIds } }).lean();
+  const channelById = new Map(derivedChannels.map(c => [c._id.toString(), c]));
+
   for (const r of allDerived) {
+    const ch = r.channelId ? channelById.get(r.channelId.toString()) : null;
+    const applicableRule = await resolveApplicableRule({
+      projectId: r.projectId,
+      instrumentId: r.instrumentId,
+      catalogCode: instrument?.catalogCode,
+      parameterCode: r.parameterCode
+    });
+
+    const severityResult = evaluateSeverity({
+      instrument,
+      channel: ch,
+      derivedReading: r,
+      quality: r.quality,
+      applicableRule
+    });
+
+    r.severity = severityResult;
+    await r.save();
+
     await LatestState.findOneAndUpdate(
       { instrumentId: r.instrumentId, parameterCode: r.parameterCode },
       {
@@ -370,7 +394,9 @@ export async function ingestTelemetry(packet, { emit = () => {}, source = null }
         value: r.value,
         unit: r.unit,
         quality: r.quality,
-        ratePerHour: r.ratePerHour
+        ratePerHour: r.ratePerHour,
+        severity: severityResult.evaluated ? severityResult.level : 'NOT_EVALUATED',
+        severityDetails: severityResult
       },
       { upsert: true, new: true }
     );
