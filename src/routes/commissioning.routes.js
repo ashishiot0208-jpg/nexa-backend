@@ -5,7 +5,7 @@ import {
   Project, Instrument, Device, ProjectGateway, 
   SensorDeviceMapping, DeviceGatewayMapping, 
   Sensor, DeviceCatalogue, GatewayCatalogue, 
-  SensorChannel, Site, Zone, User 
+  SensorChannel, Site, Zone, User, DeviceTelemetry 
 } from '../models/index.js';
 import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
@@ -492,11 +492,27 @@ router.get('/projects/:projectId/commissioning/devices', requireProjectAccess, a
   const catMap = new Map(catalogues.map(c => [c.uid, c]));
 
   // Active sensor mappings per device
-  const activeSensorMappings = await SensorDeviceMapping.find({ projectId, status: 'ACTIVE' }).lean();
+  const activeSensorMappings = await SensorDeviceMapping.find({ projectId, status: 'ACTIVE' })
+    .populate('sensorAssetId', 'code name status type model')
+    .lean();
   const sensorCountMap = new Map();
+  const sensorCodesMap = new Map();
+  const sensorListMap = new Map();
   for (const m of activeSensorMappings) {
     const devId = m.deviceAssetId.toString();
     sensorCountMap.set(devId, (sensorCountMap.get(devId) || 0) + 1);
+    if (!sensorCodesMap.has(devId)) sensorCodesMap.set(devId, []);
+    if (!sensorListMap.has(devId)) sensorListMap.set(devId, []);
+    if (m.sensorAssetId) {
+      if (m.sensorAssetId.code) sensorCodesMap.get(devId).push(m.sensorAssetId.code);
+      sensorListMap.get(devId).push({
+        _id: m.sensorAssetId._id,
+        code: m.sensorAssetId.code,
+        name: m.sensorAssetId.name,
+        type: m.sensorAssetId.type,
+        slot: m.connection?.slot ?? null
+      });
+    }
   }
 
   // Active gateway mappings per device
@@ -506,15 +522,50 @@ router.get('/projects/:projectId/commissioning/devices', requireProjectAccess, a
   }).populate('gatewayAssetId', 'gatewayId name gateway_uid').lean();
   const gatewayMappingMap = new Map(activeGatewayMappings.map(m => [m.deviceAssetId.toString(), m]));
 
+  // Latest telemetry per device
+  const devIds = devices.map(d => d._id);
+  const latestTelemetries = await DeviceTelemetry.aggregate([
+    { $match: { deviceId: { $in: devIds } } },
+    { $sort: { observedAt: -1 } },
+    { $group: { _id: '$deviceId', doc: { $first: '$$ROOT' } } }
+  ]);
+  const telemMap = new Map(latestTelemetries.map(t => [t._id.toString(), t.doc]));
+
+  const now = Date.now();
   const result = devices.map(d => {
     const uid = d.device_uid || d.metadata?.device_uid;
     const cat = catMap.get(uid) || {};
-    const connectedSensors = sensorCountMap.get(d._id.toString()) || 0;
+    const devIdStr = d._id.toString();
+    const connectedSensors = sensorCountMap.get(devIdStr) || 0;
+    const connectedSensorCodes = sensorCodesMap.get(devIdStr) || [];
+    const connectedSensorList = sensorListMap.get(devIdStr) || [];
     const maxChannels = cat.max_channels || 8;
     const availableSlots = Math.max(0, maxChannels - connectedSensors);
-    const gwMapping = gatewayMappingMap.get(d._id.toString());
+    const gwMapping = gatewayMappingMap.get(devIdStr);
     const communication = cat.communication || (d.transport === 'LORAWAN' ? 'lorawan' : '4g');
     const isDirectCloud = communication === '4g';
+
+    const telem = telemMap.get(devIdStr);
+    const lastBatteryV = d.lastBatteryV != null ? d.lastBatteryV : (telem?.batteryV != null ? telem.batteryV : null);
+    const lastRssiDbm = d.lastRssiDbm != null ? d.lastRssiDbm : (telem?.rssiDbm != null ? telem.rssiDbm : null);
+    const batteryPercent = telem?.metadata?.batteryPercent ?? telem?.metadata?.battery ?? null;
+    const lastSeenAt = d.lastSeenAt || telem?.observedAt || null;
+    const firmware = d.firmware || telem?.metadata?.firmware || null;
+
+    // Runtime connectivity status derived strictly from real lastSeenAt telemetry freshness
+    let runtimeStatus = 'NOT_REPORTING';
+    if (lastSeenAt) {
+      const lastSeenMs = new Date(lastSeenAt).getTime();
+      const intervalMs = Math.max(60, d.expectedIntervalSec || 900) * 1000;
+      const ageMs = now - lastSeenMs;
+      if (ageMs <= intervalMs * 2) {
+        runtimeStatus = 'ONLINE';
+      } else if (ageMs <= intervalMs * 6) {
+        runtimeStatus = 'STALE';
+      } else {
+        runtimeStatus = 'OFFLINE';
+      }
+    }
 
     return {
       _id: d._id,
@@ -523,15 +574,24 @@ router.get('/projects/:projectId/commissioning/devices', requireProjectAccess, a
       serial: d.serial || d.metadata?.serial || '',
       device_uid: uid,
       catalogName: cat.name || d.name,
-      model: cat.model || '—',
+      model: cat.model || d.model || '—',
+      deviceType: d.deviceType || cat.type || 'LOGGER',
       communication,
+      transport: d.transport || (cat.communication === 'lorawan' ? 'LORAWAN' : '4G'),
       supported_signal_types: cat.supported_signal_types || ['vibrating_wire', 'rs485'],
       max_channels: maxChannels,
       connectedSensors,
+      connectedSensorCodes,
+      connectedSensorList,
       availableSlots,
+      firmware,
+      lastBatteryV,
+      lastRssiDbm,
+      batteryPercent,
+      lastSeenAt,
       status: d.status,
       commissioningStatus: getDeviceCommissioningStatus(d),
-      runtimeStatus: d.runtimeStatus || (['ONLINE', 'OFFLINE'].includes(d.status) ? d.status : 'OFFLINE'),
+      runtimeStatus,
       isCommissioned: isDeviceCommissioned(d),
       isInUse: connectedSensors > 0,
       isDirectCloud,
@@ -668,18 +728,52 @@ router.get('/projects/:projectId/commissioning/gateways', requireProjectAccess, 
   const catMap = new Map(catalogues.map(c => [c.uid, c]));
 
   // Active mapped devices per gateway
-  const activeMappings = await DeviceGatewayMapping.find({ projectId, status: 'ACTIVE' }).lean();
+  const activeMappings = await DeviceGatewayMapping.find({ projectId, status: 'ACTIVE' })
+    .populate('deviceAssetId', 'deviceId name model deviceType transport')
+    .lean();
   const mappedCountMap = new Map();
+  const mappedDeviceCodesMap = new Map();
+  const mappedDeviceListMap = new Map();
   for (const m of activeMappings) {
     const gwId = m.gatewayAssetId.toString();
     mappedCountMap.set(gwId, (mappedCountMap.get(gwId) || 0) + 1);
+    if (!mappedDeviceCodesMap.has(gwId)) mappedDeviceCodesMap.set(gwId, []);
+    if (!mappedDeviceListMap.has(gwId)) mappedDeviceListMap.set(gwId, []);
+    if (m.deviceAssetId) {
+      if (m.deviceAssetId.deviceId) mappedDeviceCodesMap.get(gwId).push(m.deviceAssetId.deviceId);
+      mappedDeviceListMap.get(gwId).push({
+        _id: m.deviceAssetId._id,
+        deviceId: m.deviceAssetId.deviceId,
+        name: m.deviceAssetId.name,
+        deviceType: m.deviceAssetId.deviceType
+      });
+    }
   }
 
   const result = gateways.map(g => {
     const cat = catMap.get(g.gateway_uid) || {};
-    const mappedDevices = mappedCountMap.get(g._id.toString()) || 0;
+    const gwIdStr = g._id.toString();
+    const mappedDevices = mappedCountMap.get(gwIdStr) || 0;
+    const mappedDeviceCodes = mappedDeviceCodesMap.get(gwIdStr) || [];
+    const mappedDeviceList = mappedDeviceListMap.get(gwIdStr) || [];
     const maxDevices = cat.max_devices || 100;
     const availableDevices = Math.max(0, maxDevices - mappedDevices);
+    const lastSeenAt = g.metadata?.lastSeenAt || null;
+
+    let runtimeStatus = 'NOT_REPORTING';
+    if (lastSeenAt) {
+      const now = Date.now();
+      const lastSeen = new Date(lastSeenAt).getTime();
+      const intervalMs = 1800 * 1000;
+      const ageMs = now - lastSeen;
+      if (ageMs <= intervalMs * 2) {
+        runtimeStatus = 'ONLINE';
+      } else if (ageMs <= intervalMs * 6) {
+        runtimeStatus = 'STALE';
+      } else {
+        runtimeStatus = 'OFFLINE';
+      }
+    }
 
     return {
       _id: g._id,
@@ -690,11 +784,14 @@ router.get('/projects/:projectId/commissioning/gateways', requireProjectAccess, 
       macAddress: g.macAddress || '',
       gateway_uid: g.gateway_uid,
       catalogName: cat.name || g.name,
-      model: cat.model || '—',
+      model: cat.model || g.model || '—',
+      deviceType: 'GATEWAY',
       supported_device_communications: cat.supported_device_communications || ['lorawan'],
       backhaul: cat.backhaul || ['ethernet', '4g'],
       max_devices: maxDevices,
       mappedDevices,
+      mappedDeviceCodes,
+      mappedDeviceList,
       availableDevices,
       siteId: g.siteId || '',
       zoneId: g.zoneId || '',
@@ -702,6 +799,8 @@ router.get('/projects/:projectId/commissioning/gateways', requireProjectAccess, 
       gatewayEui: g.gatewayEui || '',
       activeBackhaul: g.activeBackhaul || 'ethernet',
       commissionedAt: g.commissionedAt || null,
+      lastSeenAt,
+      runtimeStatus,
       status: g.status
     };
   });
