@@ -7,12 +7,18 @@ import {
   Device,
   CameraSource,
   GeospatialLayer,
-  GeospatialFeature
+  GeospatialFeature,
+  ProjectGateway,
+  DeviceCatalogue,
+  GatewayCatalogue,
+  SensorDeviceMapping,
+  DeviceGatewayMapping
 } from '../models/index.js';
 import { requireAuth, requireProjectAccess, requireOrgRole } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from '../services/audit.service.js';
+import { getInstrumentOperationalSummary, getProjectOperationalSummaries } from '../services/instrument-summary.service.js';
 
 const router = Router({ mergeParams: true });
 router.use(requireAuth);
@@ -139,6 +145,308 @@ router.get('/projects/:projectId/geospatial', requireProjectAccess, asyncHandler
         lastImageAt: c.lastImageAt,
         coordinates: c.metadata?.coordinates
       }))
+    }
+  });
+}));
+
+router.get('/projects/:projectId/map/instruments', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId } = req.params;
+  const organizationId = req.auth.organizationId;
+
+  const project = await Project.findOne({ _id: projectId, organizationId }).lean();
+  if (!project) {
+    throw new ApiError(404, 'Project not found');
+  }
+
+  const summaries = await getProjectOperationalSummaries(projectId, organizationId);
+
+  const markers = summaries.filter(Boolean).map(s => {
+    const coords = (Array.isArray(s.instrument?.coordinates) && s.instrument.coordinates.length >= 2)
+      ? s.instrument.coordinates
+      : (s.location?.longitude != null && s.location?.latitude != null
+        ? [s.location.longitude, s.location.latitude]
+        : null);
+
+    return {
+      id: s.instrument._id,
+      code: s.instrument.code,
+      name: s.instrument.name,
+      typeName: s.instrument.typeName,
+      catalogCode: s.instrument.catalogCode,
+      siteId: s.instrument.siteId,
+      siteName: s.location?.siteName || '—',
+      zoneId: s.instrument.zoneId,
+      zoneName: s.location?.zoneName || '—',
+      coordinates: coords,
+      orientationDeg: s.location?.orientationDeg ?? s.instrument?.orientationDeg,
+      status: s.instrument.status,
+      displayChannel: s.displayChannel,
+      latestValue: s.latest?.engineeringValue ?? null,
+      rawReadingValue: s.latest?.rawValue ?? null,
+      unit: s.latest?.unit || '',
+      channelLabel: s.latest?.channelLabel || '',
+      deltaFromBaseline: s.latest?.deltaFromBaseline ?? null,
+      severity: s.operational?.severity || 'NOT EVALUATED',
+      health: s.operational?.health || 'NOT EVALUATED',
+      quality: s.operational?.quality || 'NOT EVALUATED',
+      confidence: s.operational?.confidence ?? null,
+      rate: s.operational?.rate ?? null,
+      lastSample: s.latest?.timestamp ?? null,
+      device: s.connection?.device ? {
+        id: s.connection.device.id,
+        deviceId: s.connection.device.deviceId,
+        name: s.connection.device.name,
+        status: s.connection.device.status,
+        runtimeStatus: s.connection.device.runtimeStatus,
+        lastSeenAt: s.connection.device.lastSeenAt,
+        healthGrade: s.connection.device.healthGrade
+      } : null,
+      gateway: s.connection?.gateway ? {
+        id: s.connection.gateway.id,
+        gatewayId: s.connection.gateway.gatewayId,
+        name: s.connection.gateway.name,
+        status: s.connection.gateway.status,
+        runtimeStatus: s.connection.gateway.runtimeStatus,
+        lastSeenAt: s.connection.gateway.lastSeenAt
+      } : null
+    };
+  });
+
+  res.json(markers);
+}));
+
+router.get('/projects/:projectId/map/assets', requireProjectAccess, asyncHandler(async (req, res) => {
+  const { projectId } = req.params;
+  const organizationId = req.auth.organizationId;
+
+  const project = await Project.findOne({ _id: projectId, organizationId }).lean();
+  if (!project) {
+    throw new ApiError(404, 'Project not found');
+  }
+
+  // 1. Bulk-load instruments via existing optimized getProjectOperationalSummaries
+  const summaries = await getProjectOperationalSummaries(projectId, organizationId);
+  const instruments = summaries.filter(Boolean).map(s => {
+    const coords = (Array.isArray(s.instrument?.coordinates) && s.instrument.coordinates.length >= 2 && Number.isFinite(s.instrument.coordinates[0]) && Number.isFinite(s.instrument.coordinates[1]) && !(s.instrument.coordinates[0] === 0 && s.instrument.coordinates[1] === 0))
+      ? s.instrument.coordinates
+      : (s.location?.longitude != null && s.location?.latitude != null && Number.isFinite(s.location.longitude) && Number.isFinite(s.location.latitude) && !(s.location.longitude === 0 && s.location.latitude === 0)
+        ? [s.location.longitude, s.location.latitude]
+        : null);
+
+    return {
+      id: s.instrument._id,
+      code: s.instrument.code,
+      name: s.instrument.name,
+      typeName: s.instrument.typeName,
+      catalogCode: s.instrument.catalogCode,
+      siteId: s.instrument.siteId,
+      siteName: s.location?.siteName || '—',
+      zoneId: s.instrument.zoneId,
+      zoneName: s.location?.zoneName || '—',
+      coordinates: coords,
+      orientationDeg: s.location?.orientationDeg ?? s.instrument?.orientationDeg,
+      status: s.instrument.status,
+      displayChannel: s.displayChannel,
+      latestValue: s.latest?.engineeringValue ?? null,
+      rawReadingValue: s.latest?.rawValue ?? null,
+      unit: s.latest?.unit || '',
+      channelLabel: s.latest?.channelLabel || '',
+      deltaFromBaseline: s.latest?.deltaFromBaseline ?? null,
+      severity: s.operational?.severity || 'NOT EVALUATED',
+      health: s.operational?.health || 'NOT EVALUATED',
+      quality: s.operational?.quality || 'NOT EVALUATED',
+      confidence: s.operational?.confidence ?? null,
+      rate: s.operational?.rate ?? null,
+      lastSample: s.latest?.timestamp ?? null,
+      device: s.connection?.device ? {
+        id: s.connection.device.id,
+        deviceId: s.connection.device.deviceId,
+        name: s.connection.device.name,
+        status: s.connection.device.status,
+        runtimeStatus: s.connection.device.runtimeStatus,
+        lastSeenAt: s.connection.device.lastSeenAt,
+        healthGrade: s.connection.device.healthGrade
+      } : null,
+      gateway: s.connection?.gateway ? {
+        id: s.connection.gateway.id,
+        gatewayId: s.connection.gateway.gatewayId,
+        name: s.connection.gateway.name,
+        status: s.connection.gateway.status,
+        runtimeStatus: s.connection.gateway.runtimeStatus,
+        lastSeenAt: s.connection.gateway.lastSeenAt
+      } : null
+    };
+  });
+
+  // 2. Bulk-load devices, gateways, catalogues, mappings, sites, zones
+  const [
+    rawDevices,
+    rawGateways,
+    sdms,
+    dgms,
+    sites,
+    zones
+  ] = await Promise.all([
+    Device.find({ projectId, status: { $ne: 'DECOMMISSIONED' } }).sort({ deviceId: 1 }).lean(),
+    ProjectGateway.find({ projectId, status: { $ne: 'DECOMMISSIONED' } }).sort({ gatewayId: 1 }).lean(),
+    SensorDeviceMapping.find({ projectId, status: 'ACTIVE' }).populate('sensorAssetId', 'code name type model').lean(),
+    DeviceGatewayMapping.find({ projectId, status: 'ACTIVE' }).populate('deviceAssetId', 'deviceId name model deviceType transport').populate('gatewayAssetId', 'gatewayId name model activeBackhaul').lean(),
+    Site.find({ projectId }).lean(),
+    Zone.find({ projectId }).lean()
+  ]);
+
+  const devUids = [...new Set(rawDevices.map(d => d.device_uid || d.metadata?.device_uid).filter(Boolean))];
+  const gwUids = [...new Set(rawGateways.map(g => g.gateway_uid).filter(Boolean))];
+  const [dCats, gCats] = await Promise.all([
+    DeviceCatalogue.find({ uid: { $in: devUids } }).lean(),
+    GatewayCatalogue.find({ uid: { $in: gwUids } }).lean()
+  ]);
+
+  const dCatMap = new Map(dCats.map(c => [c.uid, c]));
+  const gCatMap = new Map(gCats.map(c => [c.uid, c]));
+  const siteMap = new Map(sites.map(s => [String(s._id), s.name]));
+  const zoneMap = new Map(zones.map(z => [String(z._id), z.name]));
+
+  // Device-level mapping maps
+  const sdmCountByDevice = new Map();
+  const sdmCodesByDevice = new Map();
+  for (const s of sdms) {
+    const dId = String(s.deviceAssetId);
+    sdmCountByDevice.set(dId, (sdmCountByDevice.get(dId) || 0) + 1);
+    if (!sdmCodesByDevice.has(dId)) sdmCodesByDevice.set(dId, []);
+    if (s.sensorAssetId?.code) sdmCodesByDevice.get(dId).push(s.sensorAssetId.code);
+  }
+
+  const dgmByDevice = new Map();
+  const dgmCountByGateway = new Map();
+  const dgmCodesByGateway = new Map();
+  for (const dg of dgms) {
+    const dId = String(dg.deviceAssetId?._id || dg.deviceAssetId);
+    const gId = String(dg.gatewayAssetId?._id || dg.gatewayAssetId);
+    if (dg.gatewayAssetId) {
+      dgmByDevice.set(dId, {
+        id: dg.gatewayAssetId._id,
+        gatewayId: dg.gatewayAssetId.gatewayId,
+        name: dg.gatewayAssetId.name
+      });
+    }
+    dgmCountByGateway.set(gId, (dgmCountByGateway.get(gId) || 0) + 1);
+    if (!dgmCodesByGateway.has(gId)) dgmCodesByGateway.set(gId, []);
+    if (dg.deviceAssetId?.deviceId) dgmCodesByGateway.get(gId).push(dg.deviceAssetId.deviceId);
+  }
+
+  const now = Date.now();
+
+  const devices = rawDevices.map(d => {
+    const cat = dCatMap.get(d.device_uid || d.metadata?.device_uid) || {};
+    const dId = String(d._id);
+    const coords = (Array.isArray(d.coordinates) && d.coordinates.length >= 2 && Number.isFinite(d.coordinates[0]) && Number.isFinite(d.coordinates[1]) && !(d.coordinates[0] === 0 && d.coordinates[1] === 0))
+      ? [d.coordinates[0], d.coordinates[1]]
+      : null;
+
+    let runtimeStatus = 'UNKNOWN';
+    if (d.lastSeenAt) {
+      const ageMs = now - new Date(d.lastSeenAt).getTime();
+      const intervalMs = Math.max(60, d.expectedIntervalSec || 900) * 1000;
+      if (ageMs <= intervalMs * 2) runtimeStatus = 'ONLINE';
+      else if (ageMs <= intervalMs * 6) runtimeStatus = 'STALE';
+      else runtimeStatus = 'OFFLINE';
+    } else if (d.runtimeStatus) {
+      runtimeStatus = d.runtimeStatus;
+    }
+
+    const assignedGw = dgmByDevice.get(dId) || null;
+
+    return {
+      id: d._id,
+      deviceId: d.deviceId,
+      name: d.name,
+      model: cat.model || d.model || '—',
+      deviceType: cat.name || d.deviceType || 'Sensor Node',
+      coordinates: coords,
+      siteId: d.siteId,
+      siteName: siteMap.get(String(d.siteId)) || '—',
+      zoneId: d.zoneId,
+      zoneName: zoneMap.get(String(d.zoneId)) || '—',
+      status: d.status,
+      runtimeStatus,
+      transport: d.transport || (cat.communication === '4g' ? '4G LTE' : 'LoRaWAN'),
+      firmware: d.firmware || null,
+      lastSeenAt: d.lastSeenAt || null,
+      connectedSensorsCount: sdmCountByDevice.get(dId) || 0,
+      maxChannels: cat.max_channels || 8,
+      connectedSensorCodes: sdmCodesByDevice.get(dId) || [],
+      gateway: assignedGw
+    };
+  });
+
+  const gateways = rawGateways.map(g => {
+    const cat = gCatMap.get(g.gateway_uid) || {};
+    const gId = String(g._id);
+    const coords = (Array.isArray(g.coordinates) && g.coordinates.length >= 2 && Number.isFinite(g.coordinates[0]) && Number.isFinite(g.coordinates[1]) && !(g.coordinates[0] === 0 && g.coordinates[1] === 0))
+      ? [g.coordinates[0], g.coordinates[1]]
+      : null;
+
+    const lastSeenAt = g.metadata?.lastSeenAt || null;
+    let runtimeStatus = 'UNKNOWN';
+    if (lastSeenAt) {
+      const ageMs = now - new Date(lastSeenAt).getTime();
+      const intervalMs = 1800 * 1000;
+      if (ageMs <= intervalMs * 2) runtimeStatus = 'ONLINE';
+      else if (ageMs <= intervalMs * 6) runtimeStatus = 'STALE';
+      else runtimeStatus = 'OFFLINE';
+    }
+
+    const backhaulStr = g.activeBackhaul || cat.backhaul?.[0] || 'Ethernet';
+    const backhaul = backhaulStr.toLowerCase() === 'ethernet'
+      ? 'Ethernet'
+      : (backhaulStr.toLowerCase() === '4g' || backhaulStr.toLowerCase() === 'cellular' ? '4G LTE' : (backhaulStr.charAt(0).toUpperCase() + backhaulStr.slice(1)));
+
+    return {
+      id: g._id,
+      gatewayId: g.gatewayId,
+      name: g.name,
+      model: cat.model || g.model || '—',
+      coordinates: coords,
+      siteId: g.siteId,
+      siteName: siteMap.get(String(g.siteId)) || '—',
+      zoneId: g.zoneId,
+      zoneName: zoneMap.get(String(g.zoneId)) || '—',
+      status: g.status,
+      runtimeStatus,
+      backhaul,
+      firmware: g.metadata?.firmware || null,
+      lastSeenAt,
+      devicesRoutedCount: dgmCountByGateway.get(gId) || 0,
+      maxDevices: cat.max_devices || 100,
+      mappedDeviceCodes: dgmCodesByGateway.get(gId) || []
+    };
+  });
+
+  const instPos = instruments.filter(i => Array.isArray(i.coordinates) && i.coordinates.length >= 2).length;
+  const devPos = devices.filter(d => Array.isArray(d.coordinates) && d.coordinates.length >= 2).length;
+  const gwPos = gateways.filter(g => Array.isArray(g.coordinates) && g.coordinates.length >= 2).length;
+
+  res.json({
+    instruments,
+    devices,
+    gateways,
+    counts: {
+      instruments: {
+        total: instruments.length,
+        positioned: instPos,
+        unpositioned: instruments.length - instPos
+      },
+      devices: {
+        total: devices.length,
+        positioned: devPos,
+        unpositioned: devices.length - devPos
+      },
+      gateways: {
+        total: gateways.length,
+        positioned: gwPos,
+        unpositioned: gateways.length - gwPos
+      }
     }
   });
 }));
