@@ -533,4 +533,70 @@ router.post('/projects/:projectId/geospatial/import', requireProjectAccess, requ
   });
 }));
 
+router.delete([
+  '/projects/:projectId/geospatial/:layerId',
+  '/projects/:projectId/geospatial/layers/:layerId'
+], requireProjectAccess, requireOrgRole('ADMINISTRATOR', 'ENGINEER'), asyncHandler(async (req, res) => {
+  const { projectId, layerId } = req.params;
+  const orgId = req.auth?.organizationId;
+
+  const project = await Project.findOne({
+    _id: projectId,
+    ...(orgId ? { organizationId: orgId } : {})
+  }).lean();
+
+  if (!project) {
+    throw new ApiError(404, 'Project not found');
+  }
+
+  const layer = await GeospatialLayer.findOne({
+    _id: layerId,
+    projectId: project._id,
+    ...(orgId ? { organizationId: orgId } : {})
+  });
+
+  if (!layer) {
+    throw new ApiError(404, 'Geospatial layer not found');
+  }
+
+  // Delete all features belonging to this layer
+  const featureDeleteResult = await GeospatialFeature.deleteMany({
+    layerId: layer._id,
+    projectId: project._id,
+    ...(orgId ? { organizationId: orgId } : {})
+  });
+
+  // Delete the layer document itself
+  await GeospatialLayer.deleteOne({
+    _id: layer._id,
+    projectId: project._id,
+    ...(orgId ? { organizationId: orgId } : {})
+  });
+
+  try {
+    await audit({
+      req,
+      projectId: project._id,
+      action: 'PROJECT_GEOMETRY_DELETED',
+      resourceType: 'GeospatialLayer',
+      resourceId: layer._id,
+      previousState: {
+        layerId: layer._id,
+        name: layer.name,
+        category: layer.category,
+        featuresDeleted: featureDeleteResult.deletedCount
+      }
+    });
+  } catch (auditErr) {
+    console.warn('Audit log write failed during geometry layer deletion:', auditErr);
+  }
+
+  res.json({
+    ok: true,
+    message: 'Geometry layer removed',
+    layerId: layer._id,
+    featuresDeleted: featureDeleteResult.deletedCount
+  });
+}));
+
 export default router;
