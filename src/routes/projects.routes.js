@@ -252,7 +252,7 @@ router.get('/projects/:projectId', requireProjectAccess, asyncHandler(async (req
 }));
 
 router.get('/projects/:projectId/overview', requireProjectAccess, asyncHandler(async (req, res) => {
-  const data = await getProjectOverview(req.params.projectId);
+  const data = await getProjectOverview(req.params.projectId, req.auth?.organizationId);
   if (!data) throw new ApiError(404, 'Project not found');
   res.json(data);
 }));
