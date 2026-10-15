@@ -24,7 +24,7 @@ export async function getProjectOverview(projectId, organizationId = null) {
     Device.find({ projectId: project._id, organizationId: project.organizationId, status: { $ne: 'DECOMMISSIONED' } }).lean(),
     ProjectGateway.find({ projectId: project._id, organizationId: project.organizationId, status: { $ne: 'DECOMMISSIONED' } }).lean(),
     DecisionSnapshot.find({ projectId: project._id }).sort({ evaluatedAt: -1 }).limit(10).lean(),
-    Alarm.find({ projectId: project._id, state: { $ne: 'CLOSED' } }).sort({ createdAt: -1 }).lean(),
+    Alarm.find({ projectId: project._id, lifecycleVersion: 2, status: { $in: ['OPEN', 'ACKNOWLEDGED'] } }).sort({ createdAt: -1 }).lean(),
     LatestState.find({ projectId: project._id }).sort({ observedAt: -1 }).limit(200).lean(),
     DerivedReading.find({ projectId: project._id }).sort({ observedAt: 1 }).limit(200).lean(),
     GeospatialFeature.find({ projectId: project._id }).lean()

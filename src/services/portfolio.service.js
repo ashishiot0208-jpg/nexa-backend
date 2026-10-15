@@ -14,7 +14,7 @@ export async function getPortfolioSummary(projectIds) {
     Device.find(query).lean(),
     Instrument.find({ ...query, status: { $nin: ['PLANNED', 'DECOMMISSIONED'] } }).lean(),
     CameraSource.find(query).lean(),
-    Alarm.find({ ...query, state: { $ne: 'CLOSED' } }).lean(),
+    Alarm.find({ ...query, lifecycleVersion: 2, status: { $in: ['OPEN', 'ACKNOWLEDGED'] } }).lean(),
     SensorChannel.find({ ...query, enabled: true }).lean(),
     LatestState.find(query).lean()
   ]);

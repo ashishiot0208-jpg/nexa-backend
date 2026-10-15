@@ -70,12 +70,13 @@ async function runC3Verification() {
     const liveRules = await EngineeringSeverityRule.find({ projectId: project._id, status: 'ACTIVE' }).lean();
     console.log(`[INFO] Current live rules count: ${liveRules.length}`);
 
-    // Verify current live instruments return NOT EVALUATED
+    // Verify current live instruments return NOT EVALUATED (or S1 if development rule active)
     const inc1 = await Instrument.findOne({ projectId: project._id, code: 'INC-2026-0001' }).lean();
     if (inc1) {
       const summary = await getInstrumentOperationalSummary(inc1._id);
-      if (summary.operational.severity !== 'NOT EVALUATED') {
-        throw new Error(`Expected live instrument severity to be 'NOT EVALUATED', got '${summary.operational.severity}'`);
+      const expectedSev = liveRules.length > 0 ? 'S1' : 'NOT EVALUATED';
+      if (summary.operational.severity !== expectedSev) {
+        throw new Error(`Expected live instrument severity to be '${expectedSev}', got '${summary.operational.severity}'`);
       }
       console.log(`[PASS] Live instrument ${inc1.code} severity is currently: '${summary.operational.severity}'`);
     }

@@ -17,6 +17,7 @@ import { resolveApplicableRule, evaluateSeverity } from './severity.service.js';
 import { evaluateRules } from './rule.service.js';
 import { createDecision } from './decision.service.js';
 import { recordDeviceHealth } from './health.service.js';
+import { evaluateAlarmTriggerForSeverity } from './alarm.service.js';
 import { ApiError } from '../utils/api-error.js';
 
 /**
@@ -363,17 +364,22 @@ export async function ingestTelemetry(packet, { emit = () => {}, source = null }
   const derivedChannels = await SensorChannel.find({ _id: { $in: derivedChannelIds } }).lean();
   const channelById = new Map(derivedChannels.map(c => [c._id.toString(), c]));
 
+  const derivedInstrumentIds = allDerived.map(r => r.instrumentId).filter(Boolean);
+  const derivedInstruments = await Instrument.find({ _id: { $in: derivedInstrumentIds } }).lean();
+  const instrumentById = new Map(derivedInstruments.map(i => [i._id.toString(), i]));
+
   for (const r of allDerived) {
     const ch = r.channelId ? channelById.get(r.channelId.toString()) : null;
+    const inst = r.instrumentId ? instrumentById.get(r.instrumentId.toString()) : null;
     const applicableRule = await resolveApplicableRule({
       projectId: r.projectId,
       instrumentId: r.instrumentId,
-      catalogCode: instrument?.catalogCode,
+      catalogCode: inst?.catalogCode,
       parameterCode: r.parameterCode
     });
 
     const severityResult = evaluateSeverity({
-      instrument,
+      instrument: inst,
       channel: ch,
       derivedReading: r,
       quality: r.quality,
@@ -400,6 +406,20 @@ export async function ingestTelemetry(packet, { emit = () => {}, source = null }
       },
       { upsert: true, new: true }
     );
+
+    // 11b. Evaluate Canonical Alarm Trigger Policy (Phase C6C)
+    // Non-blocking & isolated: alarm evaluation error must NOT fail telemetry ingestion
+    try {
+      await evaluateAlarmTriggerForSeverity({
+        project,
+        instrument: inst,
+        derivedReading: r,
+        severityResult,
+        emit
+      });
+    } catch (alarmErr) {
+      console.error(`[telemetry.service] Alarm evaluation error for instrument ${r.instrumentId}:`, alarmErr);
+    }
   }
 
   // 12. Evaluate rules and decisions per instrument
