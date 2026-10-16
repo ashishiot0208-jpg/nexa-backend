@@ -99,6 +99,20 @@ const alarmSchema = new Schema({
     alarmPolicyId: { type: Schema.Types.ObjectId, ref: 'AlarmTriggerPolicy' },
     alarmPolicyVersion: Number
   },
+  // Latest engineering context (updated upon escalation)
+  currentEngineeringSnapshot: {
+    severityLevel: String,
+    ruleId: { type: Schema.Types.ObjectId, ref: 'EngineeringSeverityRule' },
+    ruleVersion: Number,
+    metric: String,
+    evaluatedValue: Number,
+    unit: String,
+    observedAt: Date,
+    severityEvaluatedAt: Date,
+    reason: String,
+    alarmPolicyId: { type: Schema.Types.ObjectId, ref: 'AlarmTriggerPolicy' },
+    alarmPolicyVersion: Number
+  },
   healthSnapshot: {
     healthGrade: String,
     evaluatedAt: Date,

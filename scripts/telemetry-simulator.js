@@ -37,6 +37,41 @@ function hasArg(name) {
   return args.includes(`--${name}`);
 }
 
+function getNumericArg(name) {
+  const flag = `--${name}`;
+  const index = args.indexOf(flag);
+  if (index === -1) return null;
+
+  if (index + 1 >= args.length || args[index + 1].startsWith('--')) {
+    console.error(`\n\x1b[31m[VALIDATION ERROR] Missing numeric value for ${flag}\x1b[0m`);
+    process.exit(1);
+  }
+
+  const rawVal = args[index + 1];
+  const num = Number(rawVal);
+  if (isNaN(num) || rawVal.trim() === '') {
+    console.error(`\n\x1b[31m[VALIDATION ERROR] Invalid numeric value for ${flag}: "${rawVal}". Expected a valid number.\x1b[0m`);
+    process.exit(1);
+  }
+
+  return num;
+}
+
+// Development CLI Value Overrides
+const overrides = {
+  xDisplacement: getNumericArg('x-displacement'),
+  yDisplacement: getNumericArg('y-displacement'),
+  temperature: getNumericArg('temperature'),
+  porePressure: getNumericArg('pore-pressure')
+};
+
+const hasOverrides = (
+  overrides.xDisplacement !== null ||
+  overrides.yDisplacement !== null ||
+  overrides.temperature !== null ||
+  overrides.porePressure !== null
+);
+
 const deviceCode = getArg('device', 'SNRS485-2026-0001');
 const gatewayCode = getArg('gateway', 'GWLR-2026-0001');
 const slot = Number(getArg('slot', '1'));
@@ -102,6 +137,30 @@ async function sendPacket(customTimestamp) {
       channel_1: Number((10.0 + (stepCount % 5) * 0.2).toFixed(2)),
       temperature: 25.0
     };
+  }
+
+  // Apply CLI channel overrides (DEVELOPMENT ONLY)
+  if (overrides.xDisplacement !== null) {
+    values.x_displacement = overrides.xDisplacement;
+  }
+  if (overrides.yDisplacement !== null) {
+    values.y_displacement = overrides.yDisplacement;
+  }
+  if (overrides.temperature !== null) {
+    values.temperature = overrides.temperature;
+  }
+  if (overrides.porePressure !== null) {
+    values.pore_pressure = overrides.porePressure;
+  }
+
+  if (hasOverrides) {
+    console.log('\n[SIM OVERRIDE]');
+    console.log(`device=${deviceCode}`);
+    console.log(`slot=${slot}`);
+    for (const [k, v] of Object.entries(values)) {
+      const unit = (k === 'x_displacement' || k === 'y_displacement') ? ' mm' : (k === 'pore_pressure' ? ' kPa' : '');
+      console.log(`${k}=${v}${unit}`);
+    }
   }
 
   const packet = {

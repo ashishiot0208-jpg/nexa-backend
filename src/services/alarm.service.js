@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { Alarm, AlarmEvent } from '../models/index.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from './audit.service.js';
@@ -19,6 +20,26 @@ export const CANONICAL_ALARM_CATEGORIES = [
 ];
 
 export const CANONICAL_ALARM_STATUSES = ['OPEN', 'ACKNOWLEDGED', 'RESOLVED'];
+
+export function humanizeParameter(paramCode) {
+  if (!paramCode) return 'Parameter';
+  const map = {
+    x_displacement: 'X displacement',
+    y_displacement: 'Y displacement',
+    z_displacement: 'Z displacement',
+    temperature: 'Temperature',
+    pore_pressure: 'Pore Pressure',
+    pressure: 'Pressure',
+    tilt_x: 'Tilt (X-axis)',
+    tilt_y: 'Tilt (Y-axis)',
+    vibration_rms: 'Vibration RMS',
+    water_level: 'Water Level',
+    crack_width: 'Crack Width',
+    strain: 'Microstrain',
+    voltage: 'Supply Voltage'
+  };
+  return map[paramCode.toLowerCase()] || paramCode.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
+}
 
 /**
  * Generate deterministic deduplication fingerprint for active alarms.
@@ -139,6 +160,7 @@ export async function createAlarm({
     openedAt: now,
     fingerprint,
     engineeringSnapshot: engineeringSnapshot || undefined,
+    currentEngineeringSnapshot: engineeringSnapshot || undefined,
     healthSnapshot: healthSnapshot || undefined,
     qualitySnapshot: qualitySnapshot || undefined,
     alarmPolicyId: effectivePolicyId || undefined,
@@ -389,8 +411,9 @@ export async function escalateAlarmSeverity({ alarmId, projectId, organizationId
   alarm.currentSeverity = newSeverity;
   alarm.severity = newSeverity;
   alarm.highestSeverity = newHighest;
+  // Preserve immutable engineeringSnapshot (Initial Trigger Snapshot); update currentEngineeringSnapshot
   if (newSnapshot) {
-    alarm.engineeringSnapshot = { ...alarm.engineeringSnapshot, ...newSnapshot };
+    alarm.currentEngineeringSnapshot = { ...(alarm.currentEngineeringSnapshot || alarm.engineeringSnapshot), ...newSnapshot };
     if (newSnapshot.alarmPolicyId) alarm.alarmPolicyId = newSnapshot.alarmPolicyId;
     if (newSnapshot.alarmPolicyVersion) alarm.alarmPolicyVersion = newSnapshot.alarmPolicyVersion;
   }
@@ -436,10 +459,28 @@ export async function escalateAlarmSeverity({ alarmId, projectId, organizationId
  * Get alarm details with full lifecycle history.
  */
 export async function getAlarm({ alarmId, projectId, organizationId }) {
-  const alarm = await Alarm.findOne({ _id: alarmId, projectId, organizationId })
+  let query = { projectId, organizationId };
+  if (mongoose.Types.ObjectId.isValid(alarmId)) {
+    query._id = alarmId;
+  } else if (typeof alarmId === 'string' && (alarmId.startsWith('ALM-') || alarmId.length === 6)) {
+    const suffix = alarmId.replace(/^ALM-/i, '').toLowerCase();
+    const candidates = await Alarm.find({ projectId, organizationId }).lean();
+    const matched = candidates.find(c => c._id.toString().toLowerCase().endsWith(suffix) || c.code === alarmId || c.alarmCode === alarmId);
+    if (matched) {
+      query._id = matched._id;
+    } else {
+      throw new ApiError(404, 'Alarm not found');
+    }
+  } else {
+    query._id = alarmId;
+  }
+
+  const alarm = await Alarm.findOne(query)
     .populate('instrumentId', 'code name')
     .populate('acknowledgedBy', 'displayName email')
     .populate('resolvedBy', 'displayName email')
+    .populate('engineeringSnapshot.ruleId', 'name code version')
+    .populate('currentEngineeringSnapshot.ruleId', 'name code version')
     .lean();
 
   if (!alarm) {
@@ -626,7 +667,8 @@ export async function evaluateAlarmTriggerForSeverity({
   if (!existingActive) {
     // 5. Create new canonical OPEN Alarm
     const instCode = instrument?.code || 'Instrument';
-    const title = `${instCode} ${parameterCode} — ${level} Engineering Advisory`;
+    const paramTitle = humanizeParameter(parameterCode);
+    const title = `${instCode} · ${paramTitle}`;
     const summary = `Engineering severity evaluated to ${level} for ${parameterCode} (${severityResult.evaluatedValue} ${severityResult.unit})`;
 
     const result = await createAlarm({
