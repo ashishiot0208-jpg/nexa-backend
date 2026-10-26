@@ -17,3 +17,4 @@ export * from './project-template.js';
 export * from './commissioning.js';
 export * from './engineering-rule.js';
 export * from './alarm-policy.js';
+export * from './investigation.js';

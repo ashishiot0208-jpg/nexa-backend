@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { Dashboard, DashboardTemplate, DashboardVersion, Device, Instrument, InstrumentCatalog, Project, ProjectMember, ProjectTemplate, RuleSet, SensorChannel, Site, UseCaseTemplate, Zone } from '../models/index.js';
+import { Dashboard, DashboardTemplate, DashboardVersion, Device, Instrument, InstrumentCatalog, OrganizationMember, Project, ProjectMember, ProjectTemplate, RuleSet, SensorChannel, Site, UseCaseTemplate, Zone } from '../models/index.js';
 import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/async-handler.js';
@@ -65,9 +65,13 @@ const createProjectSchema = z.object({
 
 router.get('/projects', asyncHandler(async (req, res) => {
   let projectIds = null;
+  const membershipMap = new Map();
   if (req.auth.organizationRole !== 'ADMINISTRATOR') {
-    const memberships = await ProjectMember.find({ userId: req.auth.userId, status: 'ACTIVE' }).select('projectId').lean();
+    const memberships = await ProjectMember.find({ userId: req.auth.userId, status: 'ACTIVE' }).select('projectId role').lean();
     projectIds = memberships.map((m) => m.projectId);
+    for (const m of memberships) {
+      membershipMap.set(m.projectId.toString(), m.role);
+    }
   }
   const q = { organizationId: req.auth.organizationId, ...(projectIds ? { _id: { $in: projectIds } } : {}) };
   const projects = await Project.find(q).sort({ createdAt: -1 }).lean();
@@ -90,6 +94,7 @@ router.get('/projects', asyncHandler(async (req, res) => {
       templateUid: p.templateUid,
       templateName: p.templateName,
       plannedConfiguration: p.plannedConfiguration,
+      projectRole: req.auth.organizationRole === 'ADMINISTRATOR' ? 'ADMINISTRATOR' : (membershipMap.get(p._id.toString()) || 'VIEWER'),
       ...summary
     };
   }));
@@ -246,6 +251,8 @@ router.get('/projects/:projectId', requireProjectAccess, asyncHandler(async (req
     ],
     instruments: instruments.map((i) => ({ id: i._id, name: i.name, code: i.code, category: categories.get(i.catalogCode) || 'Engineering', catalogCode: i.catalogCode, status: i.status, serial: i.serial })),
     devices: devices.map((d) => ({ id: d._id, name: d.name, deviceId: d.deviceId, deviceType: d.deviceType, transport: d.transport, status: d.status, healthGrade: d.healthGrade, lastSeenAt: d.lastSeenAt })),
+    projectRole: req.projectRole,
+    currentUserRole: req.projectRole,
     _raw: { project, sites, zones }
   };
   res.json(compatible);
@@ -263,6 +270,52 @@ router.patch('/projects/:projectId', requireProjectAccess, asyncHandler(async (r
   for (const key of ['name', 'clientName', 'location', 'timezone', 'status', 'setupStatus', 'metadata']) if (req.body[key] !== undefined) project[key] = req.body[key];
   await project.save(); await audit({ req, organizationId: project.organizationId, projectId: project._id, action: 'PROJECT_UPDATED', resourceType: 'Project', resourceId: project._id, previousState: before, newState: project.toObject() });
   res.json(project);
+}));
+
+router.get('/projects/:projectId/members', requireProjectAccess, asyncHandler(async (req, res) => {
+  const members = await ProjectMember.find({ projectId: req.params.projectId, status: 'ACTIVE' })
+    .populate('userId', 'displayName email status')
+    .lean();
+
+  const orgAdmins = await OrganizationMember.find({
+    organizationId: req.auth.organizationId,
+    organizationRole: 'ADMINISTRATOR',
+    status: 'ACTIVE'
+  })
+    .populate('userId', 'displayName email status')
+    .lean();
+
+  const userMap = new Map();
+  for (const m of members) {
+    if (m.userId) {
+      userMap.set(m.userId._id.toString(), {
+        userId: m.userId._id.toString(),
+        displayName: m.userId.displayName || m.userId.email,
+        email: m.userId.email,
+        role: m.role
+      });
+    }
+  }
+  for (const m of orgAdmins) {
+    if (m.userId && !userMap.has(m.userId._id.toString())) {
+      userMap.set(m.userId._id.toString(), {
+        userId: m.userId._id.toString(),
+        displayName: m.userId.displayName || m.userId.email,
+        email: m.userId.email,
+        role: 'ADMINISTRATOR'
+      });
+    }
+  }
+
+  res.json(Array.from(userMap.values()));
+}));
+
+router.get('/projects/:projectId/access', requireProjectAccess, asyncHandler(async (req, res) => {
+  res.json({
+    projectId: req.params.projectId,
+    userId: req.auth.userId,
+    projectRole: req.projectRole
+  });
 }));
 
 export default router;

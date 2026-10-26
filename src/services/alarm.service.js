@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { Alarm, AlarmEvent } from '../models/index.js';
+import { Alarm, AlarmEvent, Investigation } from '../models/index.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from './audit.service.js';
 import { ensureProjectAccess } from '../middleware/auth.js';
@@ -492,7 +492,13 @@ export async function getAlarm({ alarmId, projectId, organizationId }) {
     .populate('actorId', 'displayName email')
     .lean();
 
-  return { alarm, events };
+  const investigations = await Investigation.find({ alarmId: alarm._id, projectId })
+    .select('investigationCode title status priority assignedTo startedAt completedAt createdAt')
+    .populate('assignedTo', 'displayName email')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return { alarm: { ...alarm, investigations }, events, investigations };
 }
 
 /**
