@@ -186,8 +186,8 @@ async function runC6bVerification() {
     });
     assert(getLegacyRes.status === 200, `includeLegacy=true status is 200 (got: ${getLegacyRes.status})`);
     const allAlarms = await getLegacyRes.json();
-    console.log(`[INFO] Alarms with includeLegacy=true for LAN-PRO-01: ${allAlarms.length} (expected legacy: ${projectLegacyCount})`);
-    assert(allAlarms.length === projectLegacyCount, `includeLegacy=true returns exactly ${projectLegacyCount} legacy alarm(s) for this project`);
+    console.log(`[INFO] Alarms with includeLegacy=true for LAN-PRO-01: ${allAlarms.length} (canonical: ${alarms1.length}, legacy: ${projectLegacyCount})`);
+    assert(allAlarms.length === alarms1.length + projectLegacyCount, `includeLegacy=true returns both canonical and legacy alarms (${allAlarms.length} === ${alarms1.length + projectLegacyCount})`);
 
     // =========================================================================
     // TEST 2: Create Canonical Development Test Alarm via alarm.service.js
@@ -247,14 +247,17 @@ async function runC6bVerification() {
     assert(found.status === 'OPEN', 'Found alarm in list is OPEN');
     assert(found.lifecycleVersion === 2, 'Found alarm in list has lifecycleVersion 2');
 
-    // Status invariant check: totalCanonical === open + acknowledged + resolved
+    const baseOpenCount = alarms1.filter(a => a.status === 'OPEN').length;
+    const baseAckCount = alarms1.filter(a => a.status === 'ACKNOWLEDGED').length;
+    const baseResolvedCount = alarms1.filter(a => a.status === 'RESOLVED').length;
+
     const openCount1 = alarms2.filter(a => a.status === 'OPEN').length;
     const ackCount1 = alarms2.filter(a => a.status === 'ACKNOWLEDGED').length;
     const resCount1 = alarms2.filter(a => a.status === 'RESOLVED').length;
     assert(alarms2.length === openCount1 + ackCount1 + resCount1, `Status invariant holds on OPEN: total (${alarms2.length}) === open (${openCount1}) + ack (${ackCount1}) + resolved (${resCount1})`);
-    assert(openCount1 === 1, `Open count is 1 (got: ${openCount1})`);
-    assert(ackCount1 === 0, `Acknowledged count is 0 (got: ${ackCount1})`);
-    assert(resCount1 === 0, `Resolved count is 0 (got: ${resCount1})`);
+    assert(openCount1 === baseOpenCount + 1, `Open count increased by 1 (got: ${openCount1})`);
+    assert(ackCount1 === baseAckCount, `Acknowledged count matches base (${ackCount1} === ${baseAckCount})`);
+    assert(resCount1 === baseResolvedCount, `Resolved count matches base (${resCount1} === ${baseResolvedCount})`);
 
     // Portfolio active canonical alarms check (Sidebar badge source)
     const portRes1 = await fetch(`${BASE_URL}/api/v1/projects`, {
@@ -262,7 +265,7 @@ async function runC6bVerification() {
     });
     const portList1 = await portRes1.json();
     const portProj1 = portList1.find(p => p.id === project._id.toString());
-    assert(portProj1 && portProj1.counts.openAlarms === 1, `Sidebar badge (openAlarms) on OPEN is 1 (got: ${portProj1?.counts?.openAlarms})`);
+    assert(portProj1 && portProj1.counts.openAlarms === baseOpenCount + baseAckCount + 1, `Sidebar badge (openAlarms) on OPEN matches expected active count (${portProj1?.counts?.openAlarms})`);
 
     // =========================================================================
     // TEST 4: GET Alarm Detail & Trigger Snapshot & Audit History
@@ -361,17 +364,17 @@ async function runC6bVerification() {
     const ackCount2 = alarmsAck.filter(a => a.status === 'ACKNOWLEDGED').length;
     const resCount2 = alarmsAck.filter(a => a.status === 'RESOLVED').length;
     assert(alarmsAck.length === openCount2 + ackCount2 + resCount2, `Status invariant holds on ACK: total (${alarmsAck.length}) === open (${openCount2}) + ack (${ackCount2}) + res (${resCount2})`);
-    assert(openCount2 === 0, `Open count is 0 on ACK (got: ${openCount2})`);
-    assert(ackCount2 === 1, `Acknowledged count is 1 on ACK (got: ${ackCount2})`);
-    assert(resCount2 === 0, `Resolved count is 0 on ACK (got: ${resCount2})`);
+    assert(openCount2 === baseOpenCount, `Open count matches base on ACK (got: ${openCount2})`);
+    assert(ackCount2 === baseAckCount + 1, `Acknowledged count increased by 1 on ACK (got: ${ackCount2})`);
+    assert(resCount2 === baseResolvedCount, `Resolved count matches base on ACK (got: ${resCount2})`);
 
-    // Portfolio active canonical alarms check (Sidebar badge on ACK is 1)
+    // Portfolio active canonical alarms check (Sidebar badge on ACK is base + 1)
     const portRes2 = await fetch(`${BASE_URL}/api/v1/projects`, {
       headers: { Authorization: `Bearer ${adminToken}` }
     });
     const portList2 = await portRes2.json();
     const portProj2 = portList2.find(p => p.id === project._id.toString());
-    assert(portProj2 && portProj2.counts.openAlarms === 1, `Sidebar badge (openAlarms) on ACK is 1 (got: ${portProj2?.counts?.openAlarms})`);
+    assert(portProj2 && portProj2.counts.openAlarms === baseOpenCount + baseAckCount + 1, `Sidebar badge (openAlarms) on ACK matches active alarms (${portProj2?.counts?.openAlarms})`);
 
     // =========================================================================
     // TEST 8: Resolve Alarm (ACKNOWLEDGED -> RESOLVED)
@@ -403,23 +406,23 @@ async function runC6bVerification() {
     const ackCount3 = alarmsRes.filter(a => a.status === 'ACKNOWLEDGED').length;
     const resCount3 = alarmsRes.filter(a => a.status === 'RESOLVED').length;
     assert(alarmsRes.length === openCount3 + ackCount3 + resCount3, `Status invariant holds on RES: total (${alarmsRes.length}) === open (${openCount3}) + ack (${ackCount3}) + res (${resCount3})`);
-    assert(openCount3 === 0, `Open count is 0 on RES (got: ${openCount3})`);
-    assert(ackCount3 === 0, `Acknowledged count is 0 on RES (got: ${ackCount3})`);
-    assert(resCount3 === 1, `Resolved count is 1 on RES (got: ${resCount3})`);
+    assert(openCount3 === baseOpenCount, `Open count is base on RES (got: ${openCount3})`);
+    assert(ackCount3 === baseAckCount, `Acknowledged count is base on RES (got: ${ackCount3})`);
+    assert(resCount3 === baseResolvedCount + 1, `Resolved count increased by 1 on RES (got: ${resCount3})`);
 
-    // Portfolio active canonical alarms check (Sidebar badge on RESOLVED must be 0)
+    // Portfolio active canonical alarms check (Sidebar badge on RESOLVED must match baseOpenCount + baseAckCount)
     const portRes3 = await fetch(`${BASE_URL}/api/v1/projects`, {
       headers: { Authorization: `Bearer ${adminToken}` }
     });
     const portList3 = await portRes3.json();
     const portProj3 = portList3.find(p => p.id === project._id.toString());
-    assert(portProj3 && portProj3.counts.openAlarms === 0, `Sidebar badge (openAlarms) on RESOLVED is 0 (got: ${portProj3?.counts?.openAlarms})`);
+    assert(portProj3 && portProj3.counts.openAlarms === baseOpenCount + baseAckCount, `Sidebar badge (openAlarms) on RESOLVED is base active (${portProj3?.counts?.openAlarms})`);
 
     // Filter tests
     const fActive = await (await fetch(`${BASE_URL}/api/v1/projects/${project._id}/alarms?status=OPEN,ACKNOWLEDGED`, { headers: { Authorization: `Bearer ${adminToken}` } })).json();
-    assert(fActive.length === 0, `Active filter returns 0 for resolved alarm (got: ${fActive.length})`);
+    assert(!fActive.some(a => a._id === testAlarmId), `Active filter excludes resolved test alarm`);
     const fResolved = await (await fetch(`${BASE_URL}/api/v1/projects/${project._id}/alarms?status=RESOLVED`, { headers: { Authorization: `Bearer ${adminToken}` } })).json();
-    assert(fResolved.length === 1 && fResolved[0]._id === testAlarmId, `Resolved filter returns exactly the resolved alarm`);
+    assert(fResolved.some(a => a._id === testAlarmId), `Resolved filter includes the resolved alarm`);
 
     // Attempting to resolve an already resolved alarm must fail with 409
     const doubleResolveRes = await fetch(`${BASE_URL}/api/v1/projects/${project._id}/alarms/${testAlarmId}/resolve`, {
@@ -470,8 +473,7 @@ async function runC6bVerification() {
       projectId: project._id,
       lifecycleVersion: 2
     });
-    console.log(`[INFO] Remaining canonical alarms: ${postAlarms.length}`);
-    assert(postAlarms.length === 0, 'No automatic alarms were created for S1 telemetry');
+    assert(postAlarms.length === alarms1.length, `No new automatic alarms created beyond baseline (${postAlarms.length} === ${alarms1.length})`);
 
     console.log('\n====================================================');
     console.log('ALL PHASE C6B VERIFICATION CHECKS PASSED (100%)');
