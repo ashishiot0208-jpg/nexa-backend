@@ -1,0 +1,226 @@
+#!/usr/bin/env node
+
+/**
+ * GeoNexa Telemetry Simulator
+ *
+ * DEVELOPMENT / TEST ONLY.
+ * Sends simulated telemetry packets over HTTP through the canonical ingestion endpoint.
+ *
+ * SAFETY RULES:
+ * 1. Rejected if NODE_ENV=production (unless ALLOW_SIMULATOR_OVERRIDE=true).
+ * 2. Does NOT connect to MongoDB or insert fake data directly into database models.
+ * 3. Clearly marks source = 'SIMULATOR'.
+ */
+
+// Production safety check
+if (process.env.NODE_ENV === 'production' && !process.env.ALLOW_SIMULATOR_OVERRIDE) {
+  console.error('\n[SAFETY ERROR] Telemetry simulator cannot run in production (NODE_ENV=production).');
+  console.error('To override in testing, set ALLOW_SIMULATOR_OVERRIDE=true.\n');
+  process.exit(1);
+}
+
+console.log('====================================================');
+console.log('TELEMETRY SIMULATOR');
+console.log('DEVELOPMENT DATA ONLY');
+console.log('====================================================');
+
+// Parse CLI arguments
+const args = process.argv.slice(2);
+function getArg(name, defaultValue) {
+  const index = args.indexOf(`--${name}`);
+  if (index !== -1 && index + 1 < args.length && !args[index + 1].startsWith('--')) {
+    return args[index + 1];
+  }
+  return defaultValue;
+}
+function hasArg(name) {
+  return args.includes(`--${name}`);
+}
+
+function getNumericArg(name) {
+  const flag = `--${name}`;
+  const index = args.indexOf(flag);
+  if (index === -1) return null;
+
+  if (index + 1 >= args.length || args[index + 1].startsWith('--')) {
+    console.error(`\n\x1b[31m[VALIDATION ERROR] Missing numeric value for ${flag}\x1b[0m`);
+    process.exit(1);
+  }
+
+  const rawVal = args[index + 1];
+  const num = Number(rawVal);
+  if (isNaN(num) || rawVal.trim() === '') {
+    console.error(`\n\x1b[31m[VALIDATION ERROR] Invalid numeric value for ${flag}: "${rawVal}". Expected a valid number.\x1b[0m`);
+    process.exit(1);
+  }
+
+  return num;
+}
+
+// Development CLI Value Overrides
+const overrides = {
+  xDisplacement: getNumericArg('x-displacement'),
+  yDisplacement: getNumericArg('y-displacement'),
+  temperature: getNumericArg('temperature'),
+  porePressure: getNumericArg('pore-pressure')
+};
+
+const hasOverrides = (
+  overrides.xDisplacement !== null ||
+  overrides.yDisplacement !== null ||
+  overrides.temperature !== null ||
+  overrides.porePressure !== null
+);
+
+const deviceCode = getArg('device', 'SNRS485-2026-0001');
+const gatewayCode = getArg('gateway', 'GWLR-2026-0001');
+const slot = Number(getArg('slot', '1'));
+const intervalSec = getArg('interval', null) ? Math.max(1, Number(getArg('interval', '10'))) : null;
+const isOnce = hasArg('once') || !intervalSec;
+const port = process.env.PORT || 3000;
+const defaultUrl = `http://127.0.0.1:${port}/api/v1/telemetry/ingest`;
+const targetUrl = getArg('url', defaultUrl);
+
+// Configured device profiles for test chains
+const DEVICE_PROFILES = {
+  'SNRS485-2026-0001': {
+    defaultSlot: 1,
+    defaultGateway: 'GWLR-2026-0001',
+    description: 'Automatic Inclinometer (INC-2026-0001 / INC-2026-0002)',
+    generateValues: (step, targetSlot = 1) => {
+      if (Number(targetSlot) === 2) {
+        return {
+          x_displacement: Number((2.45 + Math.sin(step * 0.25) * 0.12).toFixed(3)),
+          y_displacement: Number((-0.85 + Math.cos(step * 0.25) * 0.08).toFixed(3)),
+          temperature: Number((26.8 + Math.sin(step * 0.15) * 0.25).toFixed(2))
+        };
+      }
+      return {
+        x_displacement: Number((1.25 + Math.sin(step * 0.2) * 0.08).toFixed(3)),
+        y_displacement: Number((-0.32 + Math.cos(step * 0.2) * 0.05).toFixed(3)),
+        temperature: Number((27.4 + Math.sin(step * 0.1) * 0.3).toFixed(2))
+      };
+    }
+  },
+  'DLVW08-2026-0001': {
+    defaultSlot: 1,
+    defaultGateway: 'GWLR-2026-0001',
+    description: 'Vibrating Wire Piezometer (PZVW-2026-0001)',
+    generateValues: (step) => ({
+      pore_pressure: Number((45.2 + Math.sin(step * 0.15) * 0.6).toFixed(2)),
+      temperature: Number((22.8 + Math.cos(step * 0.1) * 0.2).toFixed(2))
+    })
+  }
+};
+
+let stepCount = 0;
+
+async function sendPacket(customTimestamp) {
+  stepCount += 1;
+  const now = customTimestamp || new Date();
+  const profile = DEVICE_PROFILES[deviceCode];
+
+  let values;
+  const rawValuesArg = getArg('values', null);
+  if (rawValuesArg) {
+    try {
+      values = JSON.parse(rawValuesArg);
+    } catch {
+      console.error(`Invalid --values JSON: ${rawValuesArg}`);
+      process.exit(1);
+    }
+  } else if (profile) {
+    values = profile.generateValues(stepCount, slot);
+  } else {
+    // Generic fallback development values
+    values = {
+      channel_1: Number((10.0 + (stepCount % 5) * 0.2).toFixed(2)),
+      temperature: 25.0
+    };
+  }
+
+  // Apply CLI channel overrides (DEVELOPMENT ONLY)
+  if (overrides.xDisplacement !== null) {
+    values.x_displacement = overrides.xDisplacement;
+  }
+  if (overrides.yDisplacement !== null) {
+    values.y_displacement = overrides.yDisplacement;
+  }
+  if (overrides.temperature !== null) {
+    values.temperature = overrides.temperature;
+  }
+  if (overrides.porePressure !== null) {
+    values.pore_pressure = overrides.porePressure;
+  }
+
+  if (hasOverrides) {
+    console.log('\n[SIM OVERRIDE]');
+    console.log(`device=${deviceCode}`);
+    console.log(`slot=${slot}`);
+    for (const [k, v] of Object.entries(values)) {
+      const unit = (k === 'x_displacement' || k === 'y_displacement') ? ' mm' : (k === 'pore_pressure' ? ' kPa' : '');
+      console.log(`${k}=${v}${unit}`);
+    }
+  }
+
+  const packet = {
+    deviceCode,
+    gatewayCode: gatewayCode || (profile ? profile.defaultGateway : undefined),
+    timestamp: now.toISOString(),
+    messageId: `SIM-${deviceCode}-${Date.now()}-${stepCount}`,
+    source: 'SIMULATOR',
+    readings: [
+      {
+        slot,
+        values
+      }
+    ]
+  };
+
+  console.log(`\n[${now.toISOString()}] Sending packet #${stepCount} to ${targetUrl}:`);
+  console.log(JSON.stringify(packet, null, 2));
+
+  try {
+    const res = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-client': 'geonexa-telemetry-simulator'
+      },
+      body: JSON.stringify(packet)
+    });
+
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      console.log(`\x1b[32m✔ Accepted (${res.status}):\x1b[0m`, JSON.stringify(body));
+    } else {
+      console.log(`\x1b[31m✖ Rejected (${res.status}):\x1b[0m`, JSON.stringify(body));
+      if (isOnce) process.exit(1);
+    }
+  } catch (err) {
+    console.error(`\x1b[31m✖ Connection error:\x1b[0m ${err.message}`);
+    console.error(`  Ensure GeoNexa backend server is running on ${targetUrl}`);
+    if (isOnce) process.exit(1);
+  }
+}
+
+async function run() {
+  const count = Math.max(1, Number(getArg('count', '1')));
+
+  if (isOnce) {
+    for (let i = 0; i < count; i++) {
+      const offsetMs = (count - 1 - i) * 5 * 60 * 1000;
+      const ts = new Date(Date.now() - offsetMs);
+      await sendPacket(ts);
+    }
+    console.log(`\n[SIMULATOR] Completed ${count} packet transmission(s).`);
+    process.exit(0);
+  }
+
+  await sendPacket();
+
+  console.log(`\nRunning continuously every ${intervalSec}s. Press Ctrl+C to stop.`);
+  setInterval(sendPacket, intervalSec * 1000);
+}
+
+run();

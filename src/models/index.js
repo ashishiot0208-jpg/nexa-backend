@@ -14,3 +14,7 @@ export * from './device-type.js';
 export * from './gateway.js';
 export * from './gateway-type.js';
 export * from './project-template.js';
+export * from './commissioning.js';
+export * from './engineering-rule.js';
+export * from './alarm-policy.js';
+export * from './investigation.js';

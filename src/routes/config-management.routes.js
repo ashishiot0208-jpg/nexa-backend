@@ -10,6 +10,97 @@ router.get('/projects/:projectId/rule-set',requireProjectAccess,asyncHandler(asy
 router.post('/projects/:projectId/rule-sets/versions',requireProjectAccess,asyncHandler(async(req,res)=>{const project=await Project.findById(req.params.projectId);if(!project)throw new ApiError(404,'Project not found');const current=project.ruleSetId?await RuleSet.findById(project.ruleSetId).lean():null;const version=Number(current?.version||0)+1;const doc=await RuleSet.create({organizationId:req.auth.organizationId,code:req.body.code||current?.code||`${project.code}_RULES`,name:req.body.name||current?.name||`${project.name} Rules`,useCaseCodes:[project.useCaseCode],version,status:'DRAFT',description:req.body.description||current?.description,rules:req.body.rules||current?.rules||[],tarpActions:req.body.tarpActions||current?.tarpActions||{}});await audit({req,projectId:project._id,action:'RULESET_VERSION_CREATED',resourceType:'RuleSet',resourceId:doc._id,newState:doc.toObject()});res.status(201).json(doc);}));
 router.post('/rule-sets/:id/approve',asyncHandler(async(req,res)=>{const r=await RuleSet.findOne({_id:req.params.id,organizationId:req.auth.organizationId});if(!r)throw new ApiError(404,'Rule set not found');r.status='APPROVED';r.approvedAt=new Date();r.approvedBy=req.auth.userId;await r.save();res.json(r);}));
 router.post('/projects/:projectId/rule-sets/:id/activate',requireProjectAccess,asyncHandler(async(req,res)=>{const [project,rule]=await Promise.all([Project.findById(req.params.projectId),RuleSet.findById(req.params.id)]);if(!project||!rule)throw new ApiError(404,'Project or rule set not found');if(!['APPROVED','ACTIVE'].includes(rule.status))throw new ApiError(409,'Rule set must be approved before activation');project.ruleSetId=rule._id;await project.save();rule.status='ACTIVE';await rule.save();await audit({req,projectId:project._id,action:'RULESET_ACTIVATED',resourceType:'RuleSet',resourceId:rule._id,newState:rule.toObject()});res.json({projectId:project._id,ruleSet:rule});}));
-router.post('/projects/:projectId/sites',requireProjectAccess,asyncHandler(async(req,res)=>res.status(201).json(await Site.create({organizationId:req.auth.organizationId,projectId:req.params.projectId,name:req.body.name,code:req.body.code,type:req.body.type||'SITE',parentId:req.body.parentId,level:req.body.level||0,geometry:req.body.geometry,metadata:req.body.metadata||{}}))));
-router.post('/projects/:projectId/zones',requireProjectAccess,asyncHandler(async(req,res)=>res.status(201).json(await Zone.create({organizationId:req.auth.organizationId,projectId:req.params.projectId,siteId:req.body.siteId,name:req.body.name,code:req.body.code,type:req.body.type||'ZONE',geometry:req.body.geometry,designNotes:req.body.designNotes,responsibleEngineerId:req.body.responsibleEngineerId,metadata:req.body.metadata||{}}))));
+router.get('/projects/:projectId/sites', requireProjectAccess, asyncHandler(async (req, res) => {
+  const sites = await Site.find({ projectId: req.params.projectId }).sort({ level: 1, name: 1 }).lean();
+  res.json(sites.map(s => ({
+    id: s._id,
+    _id: s._id,
+    name: s.name,
+    code: s.code,
+    type: s.type || 'SITE',
+    node_type: s.type || 'SITE',
+    parentId: s.parentId,
+    level: s.level
+  })));
+}));
+
+router.get('/projects/:projectId/zones', requireProjectAccess, asyncHandler(async (req, res) => {
+  const query = { projectId: req.params.projectId };
+  const targetSiteId = req.query.siteId || req.query.parentId;
+  if (targetSiteId) {
+    query.$or = [{ siteId: targetSiteId }, { parentId: targetSiteId }];
+  }
+  const zones = await Zone.find(query).sort({ name: 1 }).lean();
+  res.json(zones.map(z => ({
+    id: z._id,
+    _id: z._id,
+    name: z.name,
+    code: z.code,
+    type: z.type || 'ZONE',
+    node_type: z.type || 'ZONE',
+    siteId: z.siteId || z.parentId,
+    parentId: z.parentId || z.siteId,
+    description: z.designNotes || '',
+    designNotes: z.designNotes || ''
+  })));
+}));
+
+router.post('/projects/:projectId/sites', requireProjectAccess, asyncHandler(async (req, res) => {
+  const name = (req.body.name || '').trim();
+  if (!name) throw new ApiError(400, 'Site name is required');
+  const site = await Site.create({
+    organizationId: req.auth.organizationId,
+    projectId: req.params.projectId,
+    name,
+    code: req.body.code,
+    type: req.body.type || 'SITE',
+    parentId: req.body.parentId,
+    level: req.body.level || 0,
+    geometry: req.body.geometry,
+    metadata: req.body.metadata || {}
+  });
+  res.status(201).json({
+    id: site._id,
+    _id: site._id,
+    name: site.name,
+    code: site.code,
+    type: site.type,
+    node_type: site.type,
+    parentId: site.parentId,
+    level: site.level
+  });
+}));
+
+router.post('/projects/:projectId/zones', requireProjectAccess, asyncHandler(async (req, res) => {
+  const name = (req.body.name || '').trim();
+  if (!name) throw new ApiError(400, 'Zone name is required');
+  const siteId = req.body.siteId || req.body.parentId;
+  if (!siteId) throw new ApiError(400, 'Parent Site ID is required');
+  const zone = await Zone.create({
+    organizationId: req.auth.organizationId,
+    projectId: req.params.projectId,
+    siteId,
+    parentId: siteId,
+    name,
+    code: req.body.code,
+    type: req.body.type || 'ZONE',
+    geometry: req.body.geometry,
+    designNotes: req.body.designNotes || req.body.description || '',
+    responsibleEngineerId: req.body.responsibleEngineerId,
+    metadata: req.body.metadata || {}
+  });
+  res.status(201).json({
+    id: zone._id,
+    _id: zone._id,
+    name: zone.name,
+    code: zone.code,
+    type: zone.type || 'ZONE',
+    node_type: zone.type || 'ZONE',
+    siteId: zone.siteId,
+    parentId: zone.parentId || zone.siteId,
+    description: zone.designNotes || '',
+    designNotes: zone.designNotes || ''
+  });
+}));
+
 export default router;

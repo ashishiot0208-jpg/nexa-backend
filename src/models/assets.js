@@ -7,6 +7,7 @@ const instrumentSchema = new Schema({
   siteId: { type: Schema.Types.ObjectId, ref: 'Site' },
   zoneId: { type: Schema.Types.ObjectId, ref: 'Zone' },
   catalogCode: { type: String, required: true, uppercase: true },
+  sensor_uid: String,
   name: { type: String, required: true },
   code: { type: String, required: true },
   serial: String,
@@ -14,7 +15,7 @@ const instrumentSchema = new Schema({
   coordinates: Schema.Types.Mixed,
   orientationDeg: Number,
   depthM: Number,
-  status: { type: String, enum: ['PLANNED', 'COMMISSIONING', 'COMMISSIONED', 'MAINTENANCE', 'DECOMMISSIONED'], default: 'PLANNED' },
+  status: { type: String, enum: ['PLANNED', 'REGISTERED', 'COMMISSIONING', 'SETUP_IN_PROGRESS', 'COMMISSIONED', 'MAINTENANCE', 'DECOMMISSIONED'], default: 'PLANNED' },
   commissionedAt: Date,
   commissionedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   metadata: { type: Schema.Types.Mixed, default: {} }
@@ -32,8 +33,21 @@ const sensorChannelSchema = new Schema({
   rawUnit: String,
   engineeringUnit: String,
   sampleIntervalSec: { type: Number, default: 900 },
-  calibration: { scale: { type: Number, default: 1 }, offset: { type: Number, default: 0 }, version: { type: Number, default: 1 } },
-  baseline: { value: { type: Number, default: 0 }, capturedAt: Date, version: { type: Number, default: 1 } },
+  calibration: {
+    scale: { type: Number, default: 1 },
+    offset: { type: Number, default: 0 },
+    version: { type: Number, default: 1 },
+    source: { type: String, default: '' },
+    configured: { type: Boolean, default: false },
+    configuredAt: Date
+  },
+  baseline: {
+    value: { type: Number, default: 0 },
+    capturedAt: Date,
+    version: { type: Number, default: 1 },
+    configured: { type: Boolean, default: false },
+    configuredAt: Date
+  },
   qualityConfig: {
     physicalMin: Number,
     physicalMax: Number,
@@ -49,14 +63,27 @@ sensorChannelSchema.index({ instrumentId: 1, code: 1 }, { unique: true });
 const deviceSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true },
   projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
+  siteId: { type: Schema.Types.ObjectId, ref: 'Site' },
+  zoneId: { type: Schema.Types.ObjectId, ref: 'Zone' },
+  coordinates: Schema.Types.Mixed,
   deviceId: { type: String, required: true },
+  device_uid: String,
+  model: String,
+  serial: String,
   name: { type: String, required: true },
   deviceType: { type: String, default: 'LOGGER' },
   transport: { type: String, default: '4G' },
+  devEui: { type: String, uppercase: true },
+  imei: String,
+  macAddress: { type: String, uppercase: true },
   firmware: String,
   apiKeyHash: String,
   apiKeyPrefix: String,
-  status: { type: String, enum: ['PLANNED', 'ONLINE', 'OFFLINE', 'MAINTENANCE', 'DECOMMISSIONED'], default: 'PLANNED' },
+  status: { type: String, enum: ['PLANNED', 'REGISTERED', 'SETUP_IN_PROGRESS', 'COMMISSIONED', 'ONLINE', 'OFFLINE', 'MAINTENANCE', 'DECOMMISSIONED'], default: 'PLANNED' },
+  commissioningStatus: { type: String, enum: ['PLANNED', 'REGISTERED', 'SETUP_IN_PROGRESS', 'COMMISSIONED', 'DECOMMISSIONED'], default: 'REGISTERED' },
+  runtimeStatus: { type: String, enum: ['ONLINE', 'OFFLINE', 'UNKNOWN'], default: 'OFFLINE' },
+  commissionedAt: Date,
+  commissionedBy: { type: Schema.Types.ObjectId, ref: 'User' },
   healthGrade: { type: String, enum: ['H0', 'H1', 'H2', 'H3', 'H4'], default: 'H0' },
   lastSeenAt: Date,
   lastBatteryV: Number,
@@ -65,6 +92,9 @@ const deviceSchema = new Schema({
   metadata: { type: Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
 deviceSchema.index({ organizationId: 1, deviceId: 1 }, { unique: true });
+deviceSchema.index({ organizationId: 1, devEui: 1 }, { sparse: true });
+deviceSchema.index({ organizationId: 1, imei: 1 }, { sparse: true });
+deviceSchema.index({ organizationId: 1, macAddress: 1 }, { sparse: true });
 deviceSchema.index({ projectId: 1, deviceType: 1 });
 
 const calibrationVersionSchema = new Schema({

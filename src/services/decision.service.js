@@ -122,14 +122,33 @@ export async function createDecision({ project, instrumentId, derivedReadings, r
   });
 
   for (const reading of derivedReadings) {
+    const existing = await LatestState.findOne({ instrumentId: reading.instrumentId, parameterCode: reading.parameterCode }).lean();
+    const effectiveSev = reading.severity?.evaluated ? reading.severity.level : (existing?.severity || 'NOT_EVALUATED');
+    const effectiveDetails = reading.severity || existing?.severityDetails || { evaluated: false, level: 'NOT_EVALUATED', reason: 'NO_RULE' };
+
     await LatestState.findOneAndUpdate(
       { instrumentId: reading.instrumentId, parameterCode: reading.parameterCode },
-      { organizationId: reading.organizationId, projectId: reading.projectId, instrumentId: reading.instrumentId, parameterCode: reading.parameterCode, observedAt: reading.observedAt, value: reading.value, unit: reading.unit, quality: reading.quality, ratePerHour: reading.ratePerHour, severity, decisionId: decision._id },
+      {
+        organizationId: reading.organizationId,
+        projectId: reading.projectId,
+        instrumentId: reading.instrumentId,
+        parameterCode: reading.parameterCode,
+        observedAt: reading.observedAt,
+        value: reading.value,
+        unit: reading.unit,
+        quality: reading.quality,
+        ratePerHour: reading.ratePerHour,
+        severity: effectiveSev,
+        severityDetails: effectiveDetails,
+        decisionId: decision._id
+      },
       { upsert: true, new: true }
     );
   }
-  await upsertEngineeringAlarm({ project, instrumentId, decision, emit });
-  await upsertHealthAlarm({ project, health, decision, emit });
+  // Phase C3: DO NOT create Alarm records in this phase.
+  // Alarms will be addressed in a subsequent phase.
+  // await upsertEngineeringAlarm({ project, instrumentId, decision, emit });
+  // await upsertHealthAlarm({ project, health, decision, emit });
   emit('decision.created', { decisionId: decision._id, decisionCode, projectId: project._id, instrumentId, severity, monitoringHealth: health, confidence, reasonCodes: decision.reasonCodes });
   return decision;
 }

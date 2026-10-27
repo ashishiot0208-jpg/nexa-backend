@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { Dashboard, DashboardTemplate, DashboardVersion, Device, Instrument, InstrumentCatalog, Project, ProjectMember, ProjectTemplate, RuleSet, SensorChannel, Site, UseCaseTemplate, Zone } from '../models/index.js';
+import { Dashboard, DashboardTemplate, DashboardVersion, Device, Instrument, InstrumentCatalog, OrganizationMember, Project, ProjectMember, ProjectTemplate, RuleSet, SensorChannel, Site, UseCaseTemplate, Zone } from '../models/index.js';
 import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/async-handler.js';
@@ -65,9 +65,13 @@ const createProjectSchema = z.object({
 
 router.get('/projects', asyncHandler(async (req, res) => {
   let projectIds = null;
+  const membershipMap = new Map();
   if (req.auth.organizationRole !== 'ADMINISTRATOR') {
-    const memberships = await ProjectMember.find({ userId: req.auth.userId, status: 'ACTIVE' }).select('projectId').lean();
+    const memberships = await ProjectMember.find({ userId: req.auth.userId, status: 'ACTIVE' }).select('projectId role').lean();
     projectIds = memberships.map((m) => m.projectId);
+    for (const m of memberships) {
+      membershipMap.set(m.projectId.toString(), m.role);
+    }
   }
   const q = { organizationId: req.auth.organizationId, ...(projectIds ? { _id: { $in: projectIds } } : {}) };
   const projects = await Project.find(q).sort({ createdAt: -1 }).lean();
@@ -84,12 +88,13 @@ router.get('/projects', asyncHandler(async (req, res) => {
     const summary = summaries.get(p._id.toString()) || {};
     const useCaseName = p.templateName || ptMap.get(p.templateId?.toString())?.name || uc.get(p.useCaseTemplateId?.toString())?.name || p.useCaseCode || 'General Monitoring';
     return {
-      id: p._id, name: p.name, code: p.code, clientName: p.clientName || '', location: p.location, timezone: p.timezone, status: p.status, createdAt: p.createdAt,
+      id: p._id, name: p.name, code: p.code, clientName: p.clientName || '', location: p.location, timezone: p.timezone, status: p.status, setupStatus: p.setupStatus || null, createdAt: p.createdAt,
       useCaseCode: p.useCaseCode || 'GENERAL', useCaseName,
       templateId: p.templateId,
       templateUid: p.templateUid,
       templateName: p.templateName,
       plannedConfiguration: p.plannedConfiguration,
+      projectRole: req.auth.organizationRole === 'ADMINISTRATOR' ? 'ADMINISTRATOR' : (membershipMap.get(p._id.toString()) || 'VIEWER'),
       ...summary
     };
   }));
@@ -151,19 +156,40 @@ router.post('/projects', validate(createProjectSchema), asyncHandler(async (req,
     dashboardTemplateId: body.dashboardTemplateId || undefined,
     ruleSetId: body.ruleSetId || undefined,
     correlations: body.correlations || [],
-    status: 'ACTIVE'
+    status: 'ACTIVE',
+    setupStatus: 'SETUP_REQUIRED'
   });
   await ProjectMember.create({ projectId: project._id, userId: req.auth.userId, role: req.auth.organizationRole === 'ADMINISTRATOR' ? 'ADMINISTRATOR' : 'ENGINEER', status: 'ACTIVE' });
 
   let parentId = null; let firstSite = null; let firstZone = null;
   const hierarchyList = (body.hierarchy && body.hierarchy.length > 0) ? body.hierarchy : [{ type: 'SITE', name: `${body.project.name} Site` }];
+  const seenZones = new Set();
   for (let i = 0; i < hierarchyList.length; i++) {
     const item = hierarchyList[i];
+    const trimmedName = (item.name || '').trim();
+    if (!trimmedName) continue;
     if (/ZONE|STRUCTURE|SLOPE|SECTION|CHAINAGE/i.test(item.type) && i > 0) {
-      const z = await Zone.create({ organizationId: project.organizationId, projectId: project._id, siteId: firstSite?._id, name: item.name, type: item.type.toUpperCase() });
+      const lower = trimmedName.toLowerCase();
+      if (seenZones.has(lower)) continue;
+      seenZones.add(lower);
+      const z = await Zone.create({
+        organizationId: project.organizationId,
+        projectId: project._id,
+        siteId: firstSite?._id,
+        parentId: firstSite?._id,
+        name: trimmedName,
+        type: item.type.toUpperCase()
+      });
       firstZone ||= z;
     } else {
-      const s = await Site.create({ organizationId: project.organizationId, projectId: project._id, name: item.name, type: item.type.toUpperCase(), parentId, level: i });
+      const s = await Site.create({
+        organizationId: project.organizationId,
+        projectId: project._id,
+        name: trimmedName,
+        type: item.type.toUpperCase(),
+        parentId,
+        level: i
+      });
       firstSite ||= s; parentId = s._id;
     }
   }
@@ -210,6 +236,7 @@ router.get('/projects/:projectId', requireProjectAccess, asyncHandler(async (req
     location: project.location,
     timezone: project.timezone,
     status: project.status,
+    setupStatus: project.setupStatus || null,
     template_id: project.templateId?._id || project.templateId,
     template_uid: project.templateUid,
     template_name: project.templateName || project.templateId?.name,
@@ -218,16 +245,21 @@ router.get('/projects/:projectId', requireProjectAccess, asyncHandler(async (req
     use_case_name: project.templateName || project.templateId?.name || project.useCaseTemplateId?.name || project.useCaseCode,
     dashboard_template_name: project.dashboardTemplateId?.name || null,
     rule_set_name: project.ruleSetId?.name || null,
-    hierarchy: [...sites.map((x) => ({ id: x._id, node_type: x.type, name: x.name, level: x.level })), ...zones.map((x) => ({ id: x._id, node_type: x.type, name: x.name, level: 999 }))],
+    hierarchy: [
+      ...sites.map((x) => ({ id: x._id, _id: x._id, node_type: x.type, name: x.name, level: x.level, parentId: x.parentId })),
+      ...zones.map((x) => ({ id: x._id, _id: x._id, node_type: x.type, name: x.name, level: 999, siteId: x.siteId, parentId: x.siteId || x.parentId }))
+    ],
     instruments: instruments.map((i) => ({ id: i._id, name: i.name, code: i.code, category: categories.get(i.catalogCode) || 'Engineering', catalogCode: i.catalogCode, status: i.status, serial: i.serial })),
     devices: devices.map((d) => ({ id: d._id, name: d.name, deviceId: d.deviceId, deviceType: d.deviceType, transport: d.transport, status: d.status, healthGrade: d.healthGrade, lastSeenAt: d.lastSeenAt })),
+    projectRole: req.projectRole,
+    currentUserRole: req.projectRole,
     _raw: { project, sites, zones }
   };
   res.json(compatible);
 }));
 
 router.get('/projects/:projectId/overview', requireProjectAccess, asyncHandler(async (req, res) => {
-  const data = await getProjectOverview(req.params.projectId);
+  const data = await getProjectOverview(req.params.projectId, req.auth?.organizationId);
   if (!data) throw new ApiError(404, 'Project not found');
   res.json(data);
 }));
@@ -235,9 +267,55 @@ router.get('/projects/:projectId/overview', requireProjectAccess, asyncHandler(a
 router.patch('/projects/:projectId', requireProjectAccess, asyncHandler(async (req, res) => {
   const project = await Project.findById(req.params.projectId); if (!project) throw new ApiError(404, 'Project not found');
   const before = project.toObject();
-  for (const key of ['name', 'clientName', 'location', 'timezone', 'status', 'metadata']) if (req.body[key] !== undefined) project[key] = req.body[key];
+  for (const key of ['name', 'clientName', 'location', 'timezone', 'status', 'setupStatus', 'metadata']) if (req.body[key] !== undefined) project[key] = req.body[key];
   await project.save(); await audit({ req, organizationId: project.organizationId, projectId: project._id, action: 'PROJECT_UPDATED', resourceType: 'Project', resourceId: project._id, previousState: before, newState: project.toObject() });
   res.json(project);
+}));
+
+router.get('/projects/:projectId/members', requireProjectAccess, asyncHandler(async (req, res) => {
+  const members = await ProjectMember.find({ projectId: req.params.projectId, status: 'ACTIVE' })
+    .populate('userId', 'displayName email status')
+    .lean();
+
+  const orgAdmins = await OrganizationMember.find({
+    organizationId: req.auth.organizationId,
+    organizationRole: 'ADMINISTRATOR',
+    status: 'ACTIVE'
+  })
+    .populate('userId', 'displayName email status')
+    .lean();
+
+  const userMap = new Map();
+  for (const m of members) {
+    if (m.userId) {
+      userMap.set(m.userId._id.toString(), {
+        userId: m.userId._id.toString(),
+        displayName: m.userId.displayName || m.userId.email,
+        email: m.userId.email,
+        role: m.role
+      });
+    }
+  }
+  for (const m of orgAdmins) {
+    if (m.userId && !userMap.has(m.userId._id.toString())) {
+      userMap.set(m.userId._id.toString(), {
+        userId: m.userId._id.toString(),
+        displayName: m.userId.displayName || m.userId.email,
+        email: m.userId.email,
+        role: 'ADMINISTRATOR'
+      });
+    }
+  }
+
+  res.json(Array.from(userMap.values()));
+}));
+
+router.get('/projects/:projectId/access', requireProjectAccess, asyncHandler(async (req, res) => {
+  res.json({
+    projectId: req.params.projectId,
+    userId: req.auth.userId,
+    projectRole: req.projectRole
+  });
 }));
 
 export default router;

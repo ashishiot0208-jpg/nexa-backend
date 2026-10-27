@@ -28,7 +28,7 @@ decisionSnapshotSchema.index({ projectId: 1, evaluatedAt: -1 });
 const alarmSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true },
   projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
-  instrumentId: { type: Schema.Types.ObjectId, ref: 'Instrument' },
+  instrumentId: { type: Schema.Types.ObjectId, ref: 'Instrument', index: true },
   type: { type: String, enum: ['ENGINEERING', 'MONITORING_HEALTH', 'CONFIGURATION'], default: 'ENGINEERING' },
   title: { type: String, required: true },
   severity: { type: String, default: 'S0' },
@@ -44,17 +44,119 @@ const alarmSchema = new Schema({
   reasonCodes: { type: [String], default: [] },
   resolutionCode: String,
   lastComment: String,
-  activeKey: { type: String }
+  activeKey: { type: String },
+
+  // Canonical C6 lifecycle fields
+  lifecycleVersion: { type: Number, index: true },
+  category: {
+    type: String,
+    enum: [
+      'ENGINEERING_SEVERITY',
+      'MONITORING_HEALTH',
+      'MEASUREMENT_QUALITY',
+      'DEVICE_CONNECTIVITY',
+      'GATEWAY_CONNECTIVITY',
+      'ENGINEERING',
+      'CONFIGURATION'
+    ],
+    default: 'ENGINEERING_SEVERITY',
+    index: true
+  },
+  source: { type: String },
+  status: {
+    type: String,
+    enum: [
+      'OPEN',
+      'ACKNOWLEDGED',
+      'RESOLVED',
+      'TRIGGERED',
+      'UNDER_INVESTIGATION',
+      'ACTION_IN_PROGRESS',
+      'ESCALATED',
+      'CONDITION_NORMALIZED',
+      'CLOSED'
+    ],
+    index: true
+  },
+  summary: String,
+  reason: String,
+  deviceId: { type: Schema.Types.ObjectId, ref: 'Device' },
+  gatewayId: { type: Schema.Types.ObjectId, ref: 'ProjectGateway' },
+  parameterCode: String,
+  triggeredAt: { type: Date, default: Date.now },
+
+  // Immutable trigger context snapshots
+  engineeringSnapshot: {
+    severityLevel: String,
+    ruleId: { type: Schema.Types.ObjectId, ref: 'EngineeringSeverityRule' },
+    ruleVersion: Number,
+    metric: String,
+    evaluatedValue: Number,
+    unit: String,
+    observedAt: Date,
+    severityEvaluatedAt: Date,
+    reason: String,
+    alarmPolicyId: { type: Schema.Types.ObjectId, ref: 'AlarmTriggerPolicy' },
+    alarmPolicyVersion: Number
+  },
+  // Latest engineering context (updated upon escalation)
+  currentEngineeringSnapshot: {
+    severityLevel: String,
+    ruleId: { type: Schema.Types.ObjectId, ref: 'EngineeringSeverityRule' },
+    ruleVersion: Number,
+    metric: String,
+    evaluatedValue: Number,
+    unit: String,
+    observedAt: Date,
+    severityEvaluatedAt: Date,
+    reason: String,
+    alarmPolicyId: { type: Schema.Types.ObjectId, ref: 'AlarmTriggerPolicy' },
+    alarmPolicyVersion: Number
+  },
+  healthSnapshot: {
+    healthGrade: String,
+    evaluatedAt: Date,
+    reason: String
+  },
+  qualitySnapshot: {
+    qualityGrade: String,
+    evaluatedAt: Date,
+    reason: String
+  },
+
+  // Severity tracking & escalation support
+  initialSeverity: { type: String, enum: ['S0', 'S1', 'S2', 'S3', 'S4'] },
+  currentSeverity: { type: String, enum: ['S0', 'S1', 'S2', 'S3', 'S4'] },
+  highestSeverity: { type: String, enum: ['S0', 'S1', 'S2', 'S3', 'S4'] },
+
+  // Policy traceability (Phase C6C)
+  alarmPolicyId: { type: Schema.Types.ObjectId, ref: 'AlarmTriggerPolicy' },
+  alarmPolicyVersion: Number,
+
+  // Actor & resolution tracking
+  acknowledgedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  resolvedAt: Date,
+  resolvedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+  resolutionReason: String,
+
+  // Deduplication active fingerprint
+  fingerprint: { type: String, index: true }
 }, { timestamps: true });
 alarmSchema.index({ projectId: 1, state: 1, severity: 1 });
+alarmSchema.index({ projectId: 1, status: 1, currentSeverity: 1 });
+alarmSchema.index({ projectId: 1, fingerprint: 1 });
 alarmSchema.index({ activeKey: 1 }, { unique: true, sparse: true });
 
 const alarmEventSchema = new Schema({
   alarmId: { type: Schema.Types.ObjectId, ref: 'Alarm', required: true, index: true },
-  projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+  projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
   actorType: { type: String, enum: ['USER', 'SYSTEM', 'SERVICE'], default: 'SYSTEM' },
   actorId: { type: Schema.Types.ObjectId, ref: 'User' },
+  actorEmail: String,
+  actorDisplayName: String,
   eventType: { type: String, required: true },
+  previousStatus: String,
+  newStatus: String,
   fromState: String,
   toState: String,
   comment: String,
