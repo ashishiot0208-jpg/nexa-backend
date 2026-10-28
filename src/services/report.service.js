@@ -287,7 +287,9 @@ export async function getProjectMonitoringReport({
         noTelemetry
       },
       severitySummary,
+      severityDistribution: severitySummary,
       qualitySummary,
+      measurementQuality: qualitySummary,
       infrastructure: {
         devices: {
           total: rawDevices.length,
@@ -301,7 +303,9 @@ export async function getProjectMonitoringReport({
         }
       },
       alarms: alarmCounts,
-      investigations: investigationCounts
+      alarmSummary: alarmCounts,
+      investigations: investigationCounts,
+      investigationSummary: investigationCounts
     }
   };
 }
@@ -468,6 +472,9 @@ export async function getInstrumentTrendReport({
     min: null,
     max: null,
     avg: null,
+    minimum: null,
+    maximum: null,
+    average: null,
     change: null,
     sampleCount: numericValues.length
   };
@@ -486,6 +493,9 @@ export async function getInstrumentTrendReport({
       min: Number(minVal.toFixed(4)),
       max: Number(maxVal.toFixed(4)),
       avg: Number(avgVal.toFixed(4)),
+      minimum: Number(minVal.toFixed(4)),
+      maximum: Number(maxVal.toFixed(4)),
+      average: Number(avgVal.toFixed(4)),
       change: Number((lastVal - firstVal).toFixed(4)),
       sampleCount: numericValues.length
     };
@@ -522,6 +532,13 @@ export async function getInstrumentTrendReport({
         depthM: Number.isFinite(instrument.depthM) ? instrument.depthM : null,
         orientationDeg: Number.isFinite(instrument.orientationDeg) ? instrument.orientationDeg : null
       },
+      parameter: {
+        code: effectiveParamCode,
+        name: targetChannel?.label || effectiveParamCode,
+        unit,
+        baselineValue,
+        baselineConfigured
+      },
       measurementContext: {
         parameter: effectiveParamCode,
         label: targetChannel?.label || effectiveParamCode,
@@ -532,6 +549,8 @@ export async function getInstrumentTrendReport({
         },
         calibration: calibrationMetadata
       },
+      aggregation: bucket,
+      readings: timeSeries,
       timeSeries,
       summary
     }
@@ -602,8 +621,11 @@ export async function getAlarmHistoryReport({
   const parsedLimit = Math.min(maxLimit, Math.max(1, Number(limit) || 50));
   const skip = (parsedPage - 1) * parsedLimit;
 
-  const [total, alarms] = await Promise.all([
+  const [total, openCount, ackCount, resCount, alarms] = await Promise.all([
     Alarm.countDocuments(query),
+    Alarm.countDocuments({ ...query, status: 'OPEN' }),
+    Alarm.countDocuments({ ...query, status: 'ACKNOWLEDGED' }),
+    Alarm.countDocuments({ ...query, status: 'RESOLVED' }),
     Alarm.find(query)
       .sort({ triggeredAt: -1, createdAt: -1 })
       .skip(skip)
@@ -615,6 +637,13 @@ export async function getAlarmHistoryReport({
       .populate('resolvedBy', 'displayName email')
       .lean()
   ]);
+
+  const alarmSummary = {
+    total,
+    open: openCount,
+    acknowledged: ackCount,
+    resolved: resCount
+  };
 
   // If detailed report requested, fetch chronological AlarmEvents (CREATED, ESCALATED, ACKNOWLEDGED, RESOLVED)
   let eventsByAlarmId = new Map();
@@ -644,10 +673,16 @@ export async function getAlarmHistoryReport({
 
   const formattedAlarms = alarms.map(a => ({
     id: a._id,
+    code: a._id.toString(),
     alarmCode: a._id.toString(),
     title: a.title,
     category: a.category,
     status: a.status,
+    instrument: a.instrumentId ? {
+      id: a.instrumentId._id,
+      code: a.instrumentId.code,
+      name: a.instrumentId.name
+    } : null,
     linkedAsset: {
       instrument: a.instrumentId ? {
         id: a.instrumentId._id,
@@ -666,6 +701,7 @@ export async function getAlarmHistoryReport({
       } : null
     },
     parameter: a.parameterCode || null,
+    parameterCode: a.parameterCode || null,
     initialSeverity: a.initialSeverity || null,
     currentSeverity: a.currentSeverity || null,
     highestSeverity: a.highestSeverity || a.currentSeverity || null,
@@ -683,12 +719,18 @@ export async function getAlarmHistoryReport({
       email: a.resolvedBy.email
     } : null,
     resolutionReason: a.resolutionReason || null,
+    policy: a.alarmPolicyId ? {
+      id: a.alarmPolicyId,
+      name: 'Default Severity Policy',
+      version: a.alarmPolicyVersion || 1
+    } : null,
     alarmPolicy: a.alarmPolicyId ? {
       id: a.alarmPolicyId,
       version: a.alarmPolicyVersion || 1
     } : null,
     summary: a.summary || null,
     reason: a.reason || null,
+    auditTrail: detailed ? (eventsByAlarmId.get(String(a._id)) || []) : undefined,
     timeline: detailed ? (eventsByAlarmId.get(String(a._id)) || []) : undefined
   }));
 
@@ -712,6 +754,7 @@ export async function getAlarmHistoryReport({
   return {
     ...meta,
     data: {
+      summary: alarmSummary,
       alarms: formattedAlarms,
       pagination: {
         total,
@@ -823,8 +866,13 @@ export async function getInvestigationReport({
     id: f._id,
     type: f.type,
     text: f.text,
+    body: f.text,
     evidenceReferences: f.evidenceReferences || [],
     author: f.actorDisplayName || f.createdBy?.displayName || 'Unknown',
+    createdBy: {
+      name: f.actorDisplayName || f.createdBy?.displayName || 'Unknown',
+      email: f.createdBy?.email || ''
+    },
     createdAt: f.createdAt
   }));
 
@@ -834,7 +882,11 @@ export async function getInvestigationReport({
     previousStatus: e.previousStatus,
     newStatus: e.newStatus,
     comment: e.comment,
-    actor: e.actorDisplayName || e.actorEmail || e.actorId?.displayName || 'System',
+    actor: {
+      name: e.actorDisplayName || e.actorEmail || e.actorId?.displayName || 'System',
+      email: e.actorEmail || ''
+    },
+    actorName: e.actorDisplayName || e.actorEmail || e.actorId?.displayName || 'System',
     timestamp: e.createdAt,
     metadata: e.metadata
   }));
@@ -851,6 +903,16 @@ export async function getInvestigationReport({
   return {
     ...meta,
     data: {
+      investigation: {
+        id: investigation._id,
+        code: investigation.investigationCode,
+        title: investigation.title,
+        status: investigation.status,
+        priority: investigation.priority,
+        createdAt: investigation.createdAt,
+        startedAt: investigation.startedAt || null,
+        completedAt: investigation.completedAt || null
+      },
       header: {
         investigationCode: investigation.investigationCode,
         title: investigation.title,
@@ -883,7 +945,16 @@ export async function getInvestigationReport({
       },
       sourceAlarm,
       asset,
-      assignment,
+      assignment: {
+        assignedTo: investigation.assignedTo ? {
+          id: investigation.assignedTo._id,
+          name: investigation.assignedTo.displayName,
+          displayName: investigation.assignedTo.displayName,
+          email: investigation.assignedTo.email
+        } : null,
+        assignedPerson: assignment.assignedPerson,
+        assignedAt: investigation.assignedAt || null
+      },
       description: investigation.description || '',
       findings: findingsList,
       finalOutcome: {
@@ -945,8 +1016,11 @@ export async function getInvestigationSummaryReport({
   const parsedLimit = Math.min(maxLimit, Math.max(1, Number(limit) || 50));
   const skip = (parsedPage - 1) * parsedLimit;
 
-  const [total, items] = await Promise.all([
+  const [total, openCount, inProgCount, compCount, items] = await Promise.all([
     Investigation.countDocuments(query),
+    Investigation.countDocuments({ ...query, status: 'OPEN' }),
+    Investigation.countDocuments({ ...query, status: 'IN_PROGRESS' }),
+    Investigation.countDocuments({ ...query, status: 'COMPLETED' }),
     Investigation.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -957,23 +1031,26 @@ export async function getInvestigationSummaryReport({
       .lean()
   ]);
 
+  const investigationSummary = {
+    total,
+    open: openCount,
+    inProgress: inProgCount,
+    completed: compCount
+  };
+
   const formatted = items.map(inv => ({
     id: inv._id,
+    code: inv.investigationCode,
     investigationCode: inv.investigationCode,
     title: inv.title,
     status: inv.status,
     priority: inv.priority,
     category: inv.category || 'ENGINEERING_SEVERITY',
     parameter: inv.parameterCode || null,
-    assignedTo: inv.assignedTo ? {
-      id: inv.assignedTo._id,
-      displayName: inv.assignedTo.displayName,
-      email: inv.assignedTo.email
-    } : null,
-    instrument: inv.instrumentId ? {
-      id: inv.instrumentId._id,
-      code: inv.instrumentId.code,
-      name: inv.instrumentId.name
+    sourceAlarm: inv.alarmId ? {
+      id: inv.alarmId._id,
+      code: inv.alarmId.title,
+      title: inv.alarmId.title
     } : null,
     linkedAlarm: inv.alarmId ? {
       id: inv.alarmId._id,
@@ -981,10 +1058,32 @@ export async function getInvestigationSummaryReport({
       currentSeverity: inv.alarmId.currentSeverity,
       status: inv.alarmId.status
     } : null,
+    asset: {
+      instrument: inv.instrumentId ? {
+        id: inv.instrumentId._id,
+        code: inv.instrumentId.code,
+        name: inv.instrumentId.name
+      } : null,
+      parameter: inv.parameterCode || null
+    },
+    instrument: inv.instrumentId ? {
+      id: inv.instrumentId._id,
+      code: inv.instrumentId.code,
+      name: inv.instrumentId.name
+    } : null,
+    assignedTo: inv.assignedTo ? {
+      id: inv.assignedTo._id,
+      name: inv.assignedTo.displayName,
+      displayName: inv.assignedTo.displayName,
+      email: inv.assignedTo.email
+    } : null,
+    finalOutcome: {
+      conclusion: inv.conclusion || null
+    },
+    conclusion: inv.conclusion || null,
     createdAt: inv.createdAt,
     startedAt: inv.startedAt || null,
-    completedAt: inv.completedAt || null,
-    conclusion: inv.conclusion || null
+    completedAt: inv.completedAt || null
   }));
 
   const meta = buildReportMetadata({
@@ -1005,6 +1104,7 @@ export async function getInvestigationSummaryReport({
   return {
     ...meta,
     data: {
+      summary: investigationSummary,
       investigations: formatted,
       pagination: {
         total,
@@ -1077,9 +1177,16 @@ export async function getInfrastructureHealthReport({
       name: d.name,
       model: d.model || '—',
       commissionedStatus: d.commissioningStatus || (d.status === 'COMMISSIONED' ? 'COMMISSIONED' : 'REGISTERED'),
+      commissioningStatus: d.commissioningStatus || (d.status === 'COMMISSIONED' ? 'COMMISSIONED' : 'REGISTERED'),
       runtimeConnectivity: runtimeStatus,
       mappedSensorCount: sdmCountByDev.get(String(d._id)) || 0,
+      mappedSensorsCount: sdmCountByDev.get(String(d._id)) || 0,
       gatewayMapping: gwDoc ? {
+        id: gwDoc._id,
+        code: gwDoc.gatewayId,
+        name: gwDoc.name
+      } : null,
+      gateway: gwDoc ? {
         id: gwDoc._id,
         code: gwDoc.gatewayId,
         name: gwDoc.name
@@ -1109,9 +1216,12 @@ export async function getInfrastructureHealthReport({
       name: g.name,
       model: g.model || '—',
       commissionedStatus: g.status === 'COMMISSIONED' || g.status === 'ONLINE' ? 'COMMISSIONED' : (g.status || 'REGISTERED'),
+      commissioningStatus: g.status === 'COMMISSIONED' || g.status === 'ONLINE' ? 'COMMISSIONED' : (g.status || 'REGISTERED'),
       runtimeConnectivity: runtimeStatus,
       mappedDeviceCount: dgmCountByGw.get(String(g._id)) || 0,
-      lastSeenAt
+      mappedDevicesCount: dgmCountByGw.get(String(g._id)) || 0,
+      lastSeenAt,
+      lastSeen: lastSeenAt
     };
   });
 

@@ -123,7 +123,7 @@ export function generateReportCsv(reportType, report) {
       const param = data.parameter?.code || '';
       const unit = data.parameter?.unit || '';
 
-      const readings = data.readings || [];
+      const readings = data.readings || data.timeSeries || [];
       for (const r of readings) {
         lines.push([
           formatDate(r.timestamp),
@@ -227,22 +227,22 @@ export function generateReportCsv(reportType, report) {
         'Last Seen'
       ].map(esc).join(','));
 
-      const devices = data.devices?.items || [];
+      const devices = Array.isArray(data.devices) ? data.devices : (data.devices?.items || []);
       for (const d of devices) {
         lines.push([
           'Device',
           d.code || d.id || '',
           d.name || '',
           d.model || '—',
-          normalizeLabel(d.commissioningStatus || 'UNCOMMISSIONED'),
+          normalizeLabel(d.commissioningStatus || d.commissionedStatus || 'UNCOMMISSIONED'),
           normalizeLabel(d.runtimeConnectivity || 'UNKNOWN'),
-          d.mappedSensorsCount ?? 0,
-          d.gateway?.code || d.gateway?.name || '—',
+          d.mappedSensorsCount ?? d.mappedSensorCount ?? 0,
+          d.gateway?.code || d.gateway?.name || d.gatewayMapping?.code || '—',
           formatDate(d.lastTelemetryAt || d.lastSeen)
         ].map(esc).join(','));
       }
 
-      const gateways = data.gateways?.items || [];
+      const gateways = Array.isArray(data.gateways) ? data.gateways : (data.gateways?.items || []);
       for (const g of gateways) {
         lines.push([
           'Gateway',
@@ -670,7 +670,7 @@ export function generateReportPdf(reportType, report) {
 
         // Data Table
         drawSectionHeader(doc, 'Engineering Measurement Records');
-        const readings = data.readings || [];
+        const readings = data.readings || data.timeSeries || [];
         const headers = ['TIMESTAMP', 'ENG VALUE', 'RAW VALUE', 'DELTA', 'QUALITY', 'SEVERITY'];
         const colWidths = [180, 110, 110, 110, 130, 129];
         const rows = readings.slice(0, 1500).map(r => [
@@ -856,8 +856,8 @@ export function generateReportPdf(reportType, report) {
       case 'INFRASTRUCTURE_HEALTH': {
         drawDocumentHeader(doc, 'Infrastructure Health Report', report);
 
-        const devSummary = data.devices?.summary || {};
-        const gwSummary = data.gateways?.summary || {};
+        const devSummary = data.devices?.summary || data.summary?.devices || {};
+        const gwSummary = data.gateways?.summary || data.summary?.gateways || {};
 
         drawSectionHeader(doc, 'Infrastructure Connectivity Summary');
         drawKpiRow(doc, [
@@ -872,17 +872,17 @@ export function generateReportPdf(reportType, report) {
         ]);
 
         drawSectionHeader(doc, 'Edge Devices');
-        const devItems = data.devices?.items || [];
+        const devItems = Array.isArray(data.devices) ? data.devices : (data.devices?.items || []);
         const devHeaders = ['DEVICE CODE', 'NAME', 'MODEL', 'COMMISSIONING', 'CONNECTIVITY', 'SENSORS', 'GATEWAY', 'LAST TELEMETRY'];
         const devColWidths = [100, 100, 85, 95, 85, 55, 90, 159];
         const devRows = devItems.map(d => [
           d.code || d.id || '—',
           d.name || '—',
           d.model || '—',
-          normalizeLabel(d.commissioningStatus || 'UNCOMMISSIONED'),
+          normalizeLabel(d.commissioningStatus || d.commissionedStatus || 'UNCOMMISSIONED'),
           normalizeLabel(d.runtimeConnectivity || 'UNKNOWN'),
-          String(d.mappedSensorsCount ?? 0),
-          d.gateway?.code || d.gateway?.name || '—',
+          String(d.mappedSensorsCount ?? d.mappedSensorCount ?? 0),
+          d.gateway?.code || d.gateway?.name || d.gatewayMapping?.code || '—',
           formatDate(d.lastTelemetryAt || d.lastSeen)
         ]);
         if (devRows.length === 0) {
@@ -892,17 +892,17 @@ export function generateReportPdf(reportType, report) {
         }
 
         drawSectionHeader(doc, 'Field Gateways');
-        const gwItems = data.gateways?.items || [];
+        const gwItems = Array.isArray(data.gateways) ? data.gateways : (data.gateways?.items || []);
         const gwHeaders = ['GATEWAY CODE', 'NAME', 'MODEL', 'COMMISSIONING', 'CONNECTIVITY', 'DEVICES', 'LAST SEEN'];
         const gwColWidths = [110, 120, 100, 105, 95, 60, 179];
         const gwRows = gwItems.map(g => [
           g.code || g.id || '—',
           g.name || '—',
           g.model || '—',
-          g.commissioningStatus || 'UNCOMMISSIONED',
-          g.runtimeConnectivity || 'UNKNOWN',
-          String(g.mappedDevicesCount ?? 0),
-          formatDate(g.lastSeen)
+          normalizeLabel(g.commissioningStatus || g.commissionedStatus || 'UNCOMMISSIONED'),
+          normalizeLabel(g.runtimeConnectivity || 'UNKNOWN'),
+          String(g.mappedDevicesCount ?? g.mappedDeviceCount ?? 0),
+          formatDate(g.lastSeen || g.lastSeenAt)
         ]);
         if (gwRows.length === 0) {
           doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(PALETTE.muted).text('No gateways found in this project.', doc.page.margins.left, doc.y);
