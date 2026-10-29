@@ -47,7 +47,9 @@ async function run() {
       { name: 'Infrastructure Health CSV', url: `/api/v1/projects/${project._id}/reports/infrastructure/csv`, type: 'text/csv' },
       { name: 'Severity Summary PDF', url: `/api/v1/projects/${project._id}/reports/severity/pdf`, type: 'application/pdf' },
       { name: 'Severity Summary CSV', url: `/api/v1/projects/${project._id}/reports/severity/csv`, type: 'text/csv' },
-      { name: 'Generic Export Route PDF', url: `/api/v1/projects/${project._id}/reports/export?type=monitoring-summary&format=pdf`, type: 'application/pdf' }
+      { name: 'Generic Export Route PDF', url: `/api/v1/projects/${project._id}/reports/export?type=monitoring-summary&format=pdf`, type: 'application/pdf' },
+      { name: 'Overall Project Report PDF', url: `/api/v1/projects/${project._id}/reports/overall/pdf`, type: 'application/pdf' },
+      { name: 'Overall Project Report CSV', url: `/api/v1/projects/${project._id}/reports/overall/csv`, type: 'text/csv' }
     ];
 
     if (inv) {

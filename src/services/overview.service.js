@@ -9,6 +9,8 @@ export async function getProjectOverview(projectId, organizationId = null) {
   const project = await Project.findOne(query).populate('useCaseTemplateId').lean();
   if (!project) return null;
 
+  const orgFilter = organizationId ? { organizationId } : (project.organizationId ? { organizationId: project.organizationId } : {});
+
   // 1. Bulk-load all project state in parallel (O(1) queries, zero N+1)
   const [
     summaries,
@@ -21,13 +23,13 @@ export async function getProjectOverview(projectId, organizationId = null) {
     features
   ] = await Promise.all([
     getProjectOperationalSummaries(project._id, project.organizationId),
-    Device.find({ projectId: project._id, organizationId: project.organizationId, status: { $ne: 'DECOMMISSIONED' } }).lean(),
-    ProjectGateway.find({ projectId: project._id, organizationId: project.organizationId, status: { $ne: 'DECOMMISSIONED' } }).lean(),
-    DecisionSnapshot.find({ projectId: project._id }).sort({ evaluatedAt: -1 }).limit(10).lean(),
-    Alarm.find({ projectId: project._id, lifecycleVersion: 2, status: { $in: ['OPEN', 'ACKNOWLEDGED'] } }).sort({ createdAt: -1 }).lean(),
-    LatestState.find({ projectId: project._id }).sort({ observedAt: -1 }).limit(200).lean(),
-    DerivedReading.find({ projectId: project._id }).sort({ observedAt: 1 }).limit(200).lean(),
-    GeospatialFeature.find({ projectId: project._id }).lean()
+    Device.find({ projectId: project._id, ...orgFilter, status: { $ne: 'DECOMMISSIONED' } }).lean(),
+    ProjectGateway.find({ projectId: project._id, ...orgFilter, status: { $ne: 'DECOMMISSIONED' } }).lean(),
+    DecisionSnapshot.find({ projectId: project._id, ...orgFilter }).sort({ evaluatedAt: -1 }).limit(10).lean(),
+    Alarm.find({ projectId: project._id, ...orgFilter, lifecycleVersion: 2, status: { $in: ['OPEN', 'ACKNOWLEDGED'] } }).sort({ createdAt: -1 }).lean(),
+    LatestState.find({ projectId: project._id, ...orgFilter }).sort({ observedAt: -1 }).limit(200).lean(),
+    DerivedReading.find({ projectId: project._id, ...orgFilter }).sort({ observedAt: 1 }).limit(200).lean(),
+    GeospatialFeature.find({ projectId: project._id, ...orgFilter }).lean()
   ]);
 
   // Asset counts & distributions

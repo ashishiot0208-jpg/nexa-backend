@@ -7,13 +7,15 @@ import { EngineeringSeverityRule } from '../models/index.js';
  * 3. Project-level parameter rule (generic for parameter across project)
  * 4. null (NO_RULE)
  */
-export async function resolveApplicableRule({ projectId, instrumentId, catalogCode, parameterCode }) {
+export async function resolveApplicableRule({ projectId, organizationId = null, instrumentId, catalogCode, parameterCode }) {
   if (!projectId || !parameterCode) return null;
+  const orgFilter = organizationId ? { organizationId } : {};
 
   // 1. Instrument-specific active rule
   if (instrumentId) {
     const instRule = await EngineeringSeverityRule.findOne({
       projectId,
+      ...orgFilter,
       instrumentId,
       parameterCode,
       status: 'ACTIVE'
@@ -25,6 +27,7 @@ export async function resolveApplicableRule({ projectId, instrumentId, catalogCo
   if (catalogCode) {
     const catRule = await EngineeringSeverityRule.findOne({
       projectId,
+      ...orgFilter,
       catalogCode,
       parameterCode,
       instrumentId: null,
@@ -36,6 +39,7 @@ export async function resolveApplicableRule({ projectId, instrumentId, catalogCo
   // 3. Project-level parameter rule
   const paramRule = await EngineeringSeverityRule.findOne({
     projectId,
+    ...orgFilter,
     parameterCode,
     catalogCode: null,
     instrumentId: null,

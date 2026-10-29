@@ -20,6 +20,44 @@ function formatDate(val) {
   }
 }
 
+function formatPdfDateTime(val, timezone = 'Asia/Kolkata') {
+  if (!val) return '—';
+  try {
+    const d = new Date(val);
+    if (Number.isNaN(d.getTime())) return String(val);
+    const tz = timezone || 'Asia/Kolkata';
+    const str = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz,
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    }).format(d);
+    return str.replace(/\b(am|pm)\b/i, m => m.toUpperCase());
+  } catch {
+    return String(val);
+  }
+}
+
+function formatPdfDateOnly(val, timezone = 'Asia/Kolkata') {
+  if (!val) return '—';
+  try {
+    const d = new Date(val);
+    if (Number.isNaN(d.getTime())) return String(val);
+    const tz = timezone || 'Asia/Kolkata';
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz,
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric'
+    }).format(d);
+  } catch {
+    return String(val);
+  }
+}
+
 function formatNum(val, decimals = 3) {
   if (val === null || val === undefined || Number.isNaN(Number(val))) return '—';
   return Number(val).toFixed(decimals);
@@ -28,7 +66,7 @@ function formatNum(val, decimals = 3) {
 function normalizeLabel(val) {
   if (val === null || val === undefined) return '—';
   const s = String(val).trim().toUpperCase();
-  if (s === 'NOT_EVALUATED') return 'Not Evaluated';
+  if (s === 'NOT_EVALUATED' || s === 'NOT EVALUATED') return 'Not Evaluated';
   if (s === 'UNKNOWN') return 'Unknown';
   if (s === 'UNAVAILABLE') return 'Unavailable';
   if (s === 'COMMISSIONED') return 'Commissioned';
@@ -390,20 +428,25 @@ function drawDocumentHeader(doc, reportTitle, report) {
 }
 
 /**
- * Draws section title.
+ * Draws section title with accurate remaining space check.
  */
-function drawSectionHeader(doc, title) {
-  if (doc.y > doc.page.height - 100) doc.addPage();
-  doc.moveDown(0.6);
-  doc.font('Helvetica-Bold').fontSize(10).fillColor(PALETTE.primary).text(title.toUpperCase());
-  doc.moveDown(0.3);
+function drawSectionHeader(doc, title, requiredHeight = 50) {
+  const bottomLimit = doc.page.height - doc.page.margins.bottom;
+  if (doc.y + requiredHeight > bottomLimit) {
+    doc.addPage({ size: 'A4', layout: doc.page.layout, margins: { top: 36, bottom: 36, left: 36, right: 36 } });
+  }
+  doc.moveDown(0.35);
+  doc.font('Helvetica-Bold').fontSize(11).fillColor(PALETTE.primary).text(title.toUpperCase(), doc.page.margins.left, doc.y);
+  doc.moveDown(0.2);
 }
 
 /**
  * Draws KPI metric cards in a row.
  */
 function drawKpiRow(doc, items = []) {
-  if (doc.y > doc.page.height - 80) doc.addPage();
+  if (doc.y > doc.page.height - 80) {
+    doc.addPage({ size: 'A4', layout: doc.page.layout, margins: { top: 36, bottom: 36, left: 36, right: 36 } });
+  }
   const startX = doc.page.margins.left;
   const totalWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const cardWidth = (totalWidth - (items.length - 1) * 8) / items.length;
@@ -423,24 +466,26 @@ function drawKpiRow(doc, items = []) {
       .stroke();
 
     // Value
-    doc.font('Helvetica-Bold').fontSize(12).fillColor(item.color || PALETTE.dark)
-      .text(String(item.value ?? '—'), x + 6, startY + 5, { width: cardWidth - 12, align: 'center' });
+    doc.font('Helvetica-Bold').fontSize(11).fillColor(item.color || PALETTE.dark)
+      .text(String(item.value ?? '—'), x + 4, startY + 5, { width: cardWidth - 8, align: 'center', lineBreak: false });
     // Label
-    doc.font('Helvetica').fontSize(7.5).fillColor(PALETTE.muted)
-      .text(item.label.toUpperCase(), x + 4, startY + 21, { width: cardWidth - 8, align: 'center' });
+    doc.font('Helvetica').fontSize(7).fillColor(PALETTE.muted)
+      .text(item.label.toUpperCase(), x + 4, startY + 21, { width: cardWidth - 8, align: 'center', lineBreak: false });
     doc.restore();
   });
 
   doc.y = startY + cardHeight + 8;
+  doc.x = startX;
 }
 
 /**
- * Draws a clean tabular grid.
+ * Draws a clean tabular grid with horizontal header alignment and layout preservation.
  */
-function drawTable(doc, headers = [], rows = [], colWidths = []) {
+function drawTable(doc, headers = [], rows = [], colWidths = [], options = {}) {
   const startX = doc.page.margins.left;
   const totalWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  const rowHeight = 18;
+  const rowHeight = options.rowHeight || 18;
+  const fontSize = options.fontSize || 7.5;
 
   // Auto compute widths if not provided
   const widths = colWidths.length === headers.length
@@ -448,42 +493,53 @@ function drawTable(doc, headers = [], rows = [], colWidths = []) {
     : headers.map(() => totalWidth / headers.length);
 
   function printHeader() {
+    const headerY = doc.y;
     doc.save()
-      .rect(startX, doc.y, totalWidth, rowHeight)
+      .rect(startX, headerY, totalWidth, rowHeight)
       .fillColor(PALETTE.bgHeader)
       .fill()
-      .rect(startX, doc.y, totalWidth, rowHeight)
+      .rect(startX, headerY, totalWidth, rowHeight)
       .strokeColor(PALETTE.border)
       .lineWidth(0.5)
       .stroke();
 
     let curX = startX;
     headers.forEach((h, i) => {
-      doc.font('Helvetica-Bold').fontSize(7.5).fillColor(PALETTE.dark)
-        .text(String(h).toUpperCase(), curX + 4, doc.y + 5, { width: widths[i] - 8, align: 'left', lineBreak: false });
+      doc.font('Helvetica-Bold').fontSize(fontSize).fillColor(PALETTE.dark)
+        .text(String(h).toUpperCase(), curX + 4, headerY + 5, { width: widths[i] - 8, align: 'left', lineBreak: false });
       curX += widths[i];
     });
     doc.restore();
-    doc.y += rowHeight;
+    doc.y = headerY + rowHeight;
   }
 
   printHeader();
 
   rows.forEach((row, rIdx) => {
-    if (doc.y + rowHeight > doc.page.height - doc.page.margins.bottom) {
-      doc.addPage();
+    let maxCellHeight = rowHeight;
+    row.forEach((cell, cIdx) => {
+      const cellVal = cell === null || cell === undefined ? '—' : String(cell);
+      doc.font('Helvetica').fontSize(fontSize);
+      const textH = doc.heightOfString(cellVal, { width: widths[cIdx] - 8 });
+      if (textH + 8 > maxCellHeight) {
+        maxCellHeight = Math.min(Math.round(textH + 8), 30); // allow up to 2 lines, bounded
+      }
+    });
+
+    if (doc.y + maxCellHeight > doc.page.height - doc.page.margins.bottom) {
+      doc.addPage({ size: 'A4', layout: doc.page.layout, margins: { top: 36, bottom: 36, left: 36, right: 36 } });
       printHeader();
     }
 
     const y = doc.y;
     if (rIdx % 2 === 1) {
-      doc.save().rect(startX, y, totalWidth, rowHeight).fillColor(PALETTE.bgZebra).fill().restore();
+      doc.save().rect(startX, y, totalWidth, maxCellHeight).fillColor(PALETTE.bgZebra).fill().restore();
     }
     doc.save()
       .strokeColor(PALETTE.border)
       .lineWidth(0.3)
-      .moveTo(startX, y + rowHeight)
-      .lineTo(startX + totalWidth, y + rowHeight)
+      .moveTo(startX, y + maxCellHeight)
+      .lineTo(startX + totalWidth, y + maxCellHeight)
       .stroke()
       .restore();
 
@@ -493,19 +549,181 @@ function drawTable(doc, headers = [], rows = [], colWidths = []) {
       const cellVal = cell === null || cell === undefined ? '—' : String(cell);
       doc.save();
       if (isSev && cellVal !== '—') {
-        doc.font('Helvetica-Bold').fontSize(7.5).fillColor(getSeverityColor(cellVal));
+        doc.font('Helvetica-Bold').fontSize(fontSize).fillColor(getSeverityColor(cellVal));
       } else {
-        doc.font('Helvetica').fontSize(7.5).fillColor(PALETTE.dark);
+        doc.font('Helvetica').fontSize(fontSize).fillColor(PALETTE.dark);
       }
-      doc.text(cellVal, curX + 4, y + 4.5, { width: widths[cIdx] - 8, align: 'left', lineBreak: false });
+      doc.text(cellVal, curX + 4, y + 4.5, {
+        width: widths[cIdx] - 8,
+        height: maxCellHeight - 6,
+        align: 'left',
+        lineBreak: true,
+        ellipsis: true
+      });
       doc.restore();
       curX += widths[cIdx];
     });
 
-    doc.y = y + rowHeight;
+    doc.y = y + maxCellHeight;
   });
 
   doc.y += 6;
+  doc.x = startX;
+}
+
+/**
+ * Draws executive document header for Overall Project Monitoring Report.
+ */
+function drawOverallDocumentHeader(doc, report) {
+  const proj = report.project || {};
+  const period = report.period || {};
+  const tz = proj.timezone || 'Asia/Kolkata';
+
+  doc.save();
+
+  // Logo & Main Title
+  doc.font('Helvetica-Bold').fontSize(16).fillColor(PALETTE.primary).text('NexaIQ', { continued: false });
+  doc.font('Helvetica-Bold').fontSize(13).fillColor(PALETTE.dark).text('OVERALL PROJECT MONITORING REPORT');
+  doc.moveDown(0.5);
+
+  const leftX = doc.page.margins.left;
+  const totalWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const colWidth = (totalWidth - 16) / 2;
+  const startY = doc.y;
+
+  const periodStr = period.from && period.to
+    ? `${formatPdfDateOnly(period.from, tz)} – ${formatPdfDateOnly(period.to, tz)}`
+    : (period.from ? `From ${formatPdfDateOnly(period.from, tz)}` : 'All Telemetry');
+
+  const genStr = `${formatPdfDateTime(report.generatedAt || new Date(), tz)}${tz === 'Asia/Kolkata' ? ' IST' : ''}`;
+
+  // Left column: Project Name, Site / Location
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(PALETTE.muted).text('PROJECT: ', leftX, startY, { continued: true });
+  doc.font('Helvetica-Bold').fillColor(PALETTE.dark).text(`${proj.name || 'Landslide Project'} [${proj.code || 'LAN-PRO-01'}]`);
+
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(PALETTE.muted).text('SITE / LOCATION: ', leftX, doc.y + 3, { continued: true });
+  doc.font('Helvetica').fillColor(PALETTE.dark).text(`${proj.location || proj.site || 'Site 1'}`);
+
+  const leftBottomY = doc.y;
+
+  // Right column: Report Period, Generated At
+  const rightX = leftX + colWidth + 16;
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(PALETTE.muted).text('REPORT PERIOD: ', rightX, startY, { continued: true });
+  doc.font('Helvetica-Bold').fillColor(PALETTE.dark).text(periodStr);
+
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(PALETTE.muted).text('GENERATED: ', rightX, doc.y + 3, { continued: true });
+  doc.font('Helvetica').fillColor(PALETTE.dark).text(genStr);
+
+  const nextY = Math.max(leftBottomY, doc.y) + 8;
+  doc.strokeColor(PALETTE.border).lineWidth(1).moveTo(leftX, nextY).lineTo(leftX + totalWidth, nextY).stroke();
+  doc.y = nextY + 10;
+  doc.x = leftX;
+
+  doc.restore();
+}
+
+/**
+ * Resolves human-readable Generated By string from report/auth context.
+ */
+function resolveGeneratedBy(report) {
+  const userObj = report.user || report.generatedByUser;
+  if (userObj) {
+    if (userObj.displayName) return userObj.displayName;
+    if (userObj.email) return userObj.email;
+  }
+  const raw = report.generatedBy || report.data?.projectInformation?.generatedBy || report.metadata?.generatedBy;
+  if (!raw) return 'System User';
+  if (typeof raw === 'string') {
+    if (raw === 'SYSTEM' || raw === 'System' || /^[0-9a-f]{24}$/i.test(raw)) {
+      return 'System User';
+    }
+    return raw;
+  }
+  if (typeof raw === 'object' && raw !== null) {
+    return raw.displayName || raw.email || raw.name || 'System User';
+  }
+  return 'System User';
+}
+
+/**
+ * Draws Project Information metadata grid (2-column key-value cards).
+ */
+function drawProjectInfoGrid(doc, infoItems = []) {
+  const startX = doc.page.margins.left;
+  const totalWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const rowsCount = Math.ceil(infoItems.length / 2);
+  const cardHeight = rowsCount * 20 + 12;
+  const colWidth = (totalWidth - 16) / 2;
+  const startY = doc.y;
+
+  doc.save()
+    .rect(startX, startY, totalWidth, cardHeight)
+    .fillColor('#F8F9FA')
+    .fill()
+    .rect(startX, startY, totalWidth, cardHeight)
+    .strokeColor(PALETTE.border)
+    .lineWidth(0.75)
+    .stroke();
+
+  infoItems.forEach((item, idx) => {
+    const col = idx % 2;
+    const row = Math.floor(idx / 2);
+    const itemX = startX + 12 + col * (colWidth + 8);
+    const itemY = startY + 8 + row * 20;
+
+    doc.font('Helvetica-Bold').fontSize(8).fillColor(PALETTE.muted)
+      .text(item.label.toUpperCase(), itemX, itemY, { width: 95, align: 'left', lineBreak: false });
+    doc.font('Helvetica-Bold').fontSize(8.5).fillColor(PALETTE.dark)
+      .text(item.value || '—', itemX + 100, itemY, { width: colWidth - 105, align: 'left', lineBreak: false });
+  });
+
+  doc.restore();
+  doc.y = startY + cardHeight + 10;
+  doc.x = startX;
+}
+
+/**
+ * Draws Operational Attention category card.
+ */
+function drawAttentionCategory(doc, categoryTitle, items = []) {
+  if (items.length === 0) return;
+  const startX = doc.page.margins.left;
+  const totalWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+
+  doc.font('Helvetica').fontSize(8);
+  let contentHeight = 0;
+  const itemHeights = items.map(it => {
+    const h = doc.heightOfString(it, { width: totalWidth - 24 });
+    contentHeight += h + 6;
+    return h;
+  });
+
+  const cardHeight = contentHeight + 24;
+
+  if (doc.y + cardHeight > doc.page.height - doc.page.margins.bottom) {
+    doc.addPage({ size: 'A4', layout: doc.page.layout, margins: { top: 36, bottom: 36, left: 36, right: 36 } });
+  }
+
+  const boxY = doc.y;
+  doc.save()
+    .rect(startX, boxY, totalWidth, cardHeight)
+    .fillColor('#F8F9FA').fill()
+    .rect(startX, boxY, totalWidth, cardHeight)
+    .strokeColor(PALETTE.border).lineWidth(0.5).stroke();
+
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(PALETTE.primary)
+    .text(categoryTitle.toUpperCase(), startX + 10, boxY + 7);
+
+  let curY = boxY + 22;
+  items.forEach((it, idx) => {
+    doc.font('Helvetica').fontSize(8).fillColor(PALETTE.dark)
+      .text(it, startX + 12, curY, { width: totalWidth - 24 });
+    curY += itemHeights[idx] + 6;
+  });
+
+  doc.restore();
+  doc.y = boxY + cardHeight + 8;
+  doc.x = startX;
 }
 
 /**
@@ -537,18 +755,26 @@ export function generateReportPdf(reportType, report) {
         doc.switchToPage(i);
         doc.save();
         const footerY = doc.page.height - 24;
-        doc.font('Helvetica').fontSize(7).fillColor(PALETTE.muted);
+        const pMeta = report.project || {};
+        const tz = pMeta.timezone || 'Asia/Kolkata';
+        const genDate = formatPdfDateOnly(report.generatedAt || new Date(), tz);
+        const reportTitle = reportType === 'OVERALL_PROJECT_MONITORING'
+          ? 'Overall Project Monitoring Report'
+          : 'Operational Report';
+        const projectCode = pMeta.code || 'PROJECT';
+
+        doc.font('Helvetica').fontSize(7.5).fillColor(PALETTE.muted);
         doc.text(
-          `NexaIQ Operational Report · Generated: ${formatDate(report.generatedAt || new Date())}`,
+          `NexaIQ · ${projectCode}   |   ${reportTitle}`,
           doc.page.margins.left,
           footerY,
-          { width: (doc.page.width - doc.page.margins.left - doc.page.margins.right) / 2, align: 'left' }
+          { width: (doc.page.width - doc.page.margins.left - doc.page.margins.right) / 2, align: 'left', lineBreak: false }
         );
         doc.text(
-          `Page ${i + 1} of ${pageRange.count}`,
+          `Page ${i + 1} of ${pageRange.count}   |   Generated ${genDate}`,
           doc.page.margins.left + (doc.page.width - doc.page.margins.left - doc.page.margins.right) / 2,
           footerY,
-          { width: (doc.page.width - doc.page.margins.left - doc.page.margins.right) / 2, align: 'right' }
+          { width: (doc.page.width - doc.page.margins.left - doc.page.margins.right) / 2, align: 'right', lineBreak: false }
         );
         doc.restore();
       }
@@ -954,6 +1180,480 @@ export function generateReportPdf(reportType, report) {
         } else {
           drawTable(doc, headers, rows, colWidths);
         }
+        break;
+      }
+
+      // -------------------------------------------------------------------
+      // 7. OVERALL PROJECT MONITORING REPORT (PHASE C8C)
+      // -------------------------------------------------------------------
+      case 'OVERALL_PROJECT_MONITORING': {
+        const pMeta = report.project || {};
+        const projInfo = data.projectInformation || {};
+        const tz = projInfo.timezone || pMeta.timezone || 'Asia/Kolkata';
+        const pPeriod = report.period || {};
+
+        // Page 1: Portrait - Cover Header, Project Information, Executive Summary
+        drawOverallDocumentHeader(doc, report);
+
+        // Section 1: Project Information
+        drawSectionHeader(doc, '1. Project Information', 110);
+        const periodStr = pPeriod.from && pPeriod.to
+          ? `${formatPdfDateOnly(pPeriod.from, tz)} – ${formatPdfDateOnly(pPeriod.to, tz)}`
+          : (pPeriod.from ? `From ${formatPdfDateOnly(pPeriod.from, tz)}` : 'All Telemetry');
+        const genStr = `${formatPdfDateTime(report.generatedAt || new Date(), tz)}${tz === 'Asia/Kolkata' ? ' IST' : ''}`;
+
+        const infoItems = [
+          { label: 'Project Name', value: projInfo.name || pMeta.name || 'Landslide Project' },
+          { label: 'Project Code', value: projInfo.code || pMeta.code || 'LAN-PRO-01' },
+          { label: 'Site / Location', value: projInfo.site || projInfo.location || pMeta.location || 'Site 1' },
+          { label: 'Timezone', value: tz },
+          { label: 'Report Period', value: periodStr },
+          { label: 'Generated At', value: genStr },
+          { label: 'Generated By', value: resolveGeneratedBy(report) }
+        ];
+        drawProjectInfoGrid(doc, infoItems);
+
+        // Section 2: Executive Monitoring Summary (Portrait Page 1)
+        drawSectionHeader(doc, '2. Executive Monitoring Summary', 160);
+        const exec = data.executiveSummary || {};
+        const cov = exec.instrumentCoverage || {};
+        const sevDist = exec.severityDistribution || {};
+        const qual = exec.measurementQuality || {};
+        const infra = exec.infrastructure || {};
+        const almSum = exec.alarmSummary || {};
+        const invSum = exec.investigationSummary || {};
+
+        // Group 1: Instruments Coverage
+        doc.font('Helvetica-Bold').fontSize(7.5).fillColor(PALETTE.muted).text('INSTRUMENT COVERAGE', doc.page.margins.left, doc.y);
+        doc.moveDown(0.2);
+        drawKpiRow(doc, [
+          { label: 'Total', value: cov.total ?? 0 },
+          { label: 'Commissioned', value: cov.commissioned ?? 0 },
+          { label: 'Reporting', value: cov.reporting ?? 0 },
+          { label: 'No Telemetry', value: cov.noTelemetry ?? 0 },
+          { label: 'Positioned', value: cov.positioned ?? 0 },
+          { label: 'Unpositioned', value: cov.unpositioned ?? 0 }
+        ]);
+
+        // Group 2: Severity Distribution
+        doc.font('Helvetica-Bold').fontSize(7.5).fillColor(PALETTE.muted).text('CURRENT SEVERITY', doc.page.margins.left, doc.y);
+        doc.moveDown(0.2);
+        drawKpiRow(doc, [
+          { label: 'S0 Normal', value: sevDist.S0 ?? 0, color: PALETTE.sevS0 },
+          { label: 'S1 Watch', value: sevDist.S1 ?? 0, color: PALETTE.sevS1 },
+          { label: 'S2 Advisory', value: sevDist.S2 ?? 0, color: PALETTE.sevS2 },
+          { label: 'S3 Warning', value: sevDist.S3 ?? 0, color: PALETTE.sevS3 },
+          { label: 'S4 Critical', value: sevDist.S4 ?? 0, color: PALETTE.sevS4 },
+          { label: 'Not Evaluated', value: sevDist.NOT_EVALUATED ?? 0, color: PALETTE.sevNone }
+        ]);
+
+        // Group 3: Operations & Workflow
+        doc.font('Helvetica-Bold').fontSize(7.5).fillColor(PALETTE.muted).text('OPERATIONS & WORKFLOW', doc.page.margins.left, doc.y);
+        doc.moveDown(0.2);
+        drawKpiRow(doc, [
+          { label: 'Valid Readings', value: qual.valid ?? 0 },
+          { label: 'Devices Online', value: `${infra.devices?.online ?? 0}/${infra.devices?.total ?? 0}` },
+          { label: 'Gateways Online', value: `${infra.gateways?.online ?? 0}/${infra.gateways?.total ?? 0}` },
+          { label: 'Active Alarms', value: (almSum.open ?? 0) + (almSum.acknowledged ?? 0), color: ((almSum.open ?? 0) + (almSum.acknowledged ?? 0)) > 0 ? PALETTE.sevS4 : PALETTE.dark },
+          { label: 'Total Alarms', value: almSum.total ?? 0 },
+          { label: 'Investigations', value: invSum.total ?? 0 }
+        ]);
+
+        // -------------------------------------------------------------------
+        // TRANSITION TO LANDSCAPE FOR WIDE TABULAR SECTIONS (3 through 8)
+        // -------------------------------------------------------------------
+        doc.addPage({ size: 'A4', layout: 'landscape', margins: { top: 36, bottom: 36, left: 36, right: 36 } });
+
+        // Section 3: Current Instrument Status
+        drawSectionHeader(doc, '3. Current Instrument Status', 120);
+        doc.font('Helvetica-Oblique').fontSize(8).fillColor(PALETTE.muted)
+          .text('Latest reading available at report generation time.', doc.page.margins.left, doc.y);
+        doc.moveDown(0.4);
+
+        const currentInstList = data.currentInstrumentStatus?.instruments || [];
+        const statusHeaders = ['INSTRUMENT', 'PARAMETER', 'LATEST VALUE', 'UNIT', 'DELTA', 'SEVERITY', 'QUALITY', 'LAST OBSERVED', 'STATE'];
+        const statusWidths = [105, 115, 65, 45, 55, 75, 65, 150, 75]; // Sum = 750 pt
+        const statusRows = [];
+
+        currentInstList.forEach(ci => {
+          const instCode = ci.instrument?.code || '—';
+          const channels = ci.channels || [];
+          if (channels.length === 0) {
+            statusRows.push([
+              instCode,
+              'No Channels',
+              '—',
+              '',
+              '—',
+              'Not Evaluated',
+              'Unavailable',
+              '—',
+              'No Telemetry'
+            ]);
+          } else {
+            channels.forEach((ch, idx) => {
+              const paramName = ch.parameterCode || ch.label || '—';
+              statusRows.push([
+                instCode,
+                idx === 0 ? paramName : `  ${paramName}`,
+                ch.latestValue !== null && ch.latestValue !== undefined ? formatNum(ch.latestValue) : '—',
+                ch.unit || '',
+                ch.deltaFromBaseline !== null && ch.deltaFromBaseline !== undefined ? formatNum(ch.deltaFromBaseline) : '—',
+                ch.severity === 'NOT_EVALUATED' ? 'Not Evaluated' : (ch.severity || 'Not Evaluated'),
+                normalizeLabel(ch.quality || 'NOT_EVALUATED'),
+                formatPdfDateTime(ch.lastObserved, tz),
+                ch.freshness || '—'
+              ]);
+            });
+          }
+        });
+
+        if (statusRows.length === 0) {
+          doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(PALETTE.muted).text('No instruments registered for project.');
+        } else {
+          drawTable(doc, statusHeaders, statusRows, statusWidths);
+        }
+
+        // Section 4: Trend Summary (Landscape)
+        drawSectionHeader(doc, '4. Trend Summary', 120);
+        const trendItems = data.trendSummary?.items || [];
+        const trendHeaders = ['INSTRUMENT', 'PARAMETER', 'FIRST', 'LAST', 'MIN', 'MAX', 'AVERAGE', 'CHANGE', 'SAMPLES'];
+        const trendWidths = [110, 140, 70, 70, 70, 70, 70, 80, 70]; // Sum = 750 pt
+        const trendRows = trendItems.map(ti => [
+          ti.instrumentCode || '—',
+          ti.parameterCode || ti.parameterLabel || '—',
+          ti.firstValue !== null && ti.firstValue !== undefined ? formatNum(ti.firstValue) : '—',
+          ti.lastValue !== null && ti.lastValue !== undefined ? formatNum(ti.lastValue) : '—',
+          ti.minimum !== null && ti.minimum !== undefined ? formatNum(ti.minimum) : '—',
+          ti.maximum !== null && ti.maximum !== undefined ? formatNum(ti.maximum) : '—',
+          ti.average !== null && ti.average !== undefined ? formatNum(ti.average) : '—',
+          ti.change !== null && ti.change !== undefined ? `${ti.change > 0 ? '+' : ''}${formatNum(ti.change)}` : '—',
+          String(ti.sampleCount ?? 0)
+        ]);
+
+        if (trendRows.length === 0) {
+          doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(PALETTE.muted).text('No trend telemetry recorded during the selected reporting period.');
+        } else {
+          drawTable(doc, trendHeaders, trendRows, trendWidths);
+        }
+
+        // Section 5: Engineering Severity Summary (Landscape)
+        drawSectionHeader(doc, '5. Engineering Severity Summary', 120);
+        const sevItems = data.severitySummary?.instruments || [];
+        const sevHeaders = ['INSTRUMENT', 'PARAMETER', 'LATEST', 'UNIT', 'DELTA', 'SEVERITY', 'QUALITY', 'EFFECTIVE RULE', 'OBSERVED AT'];
+        const sevWidths = [95, 115, 65, 45, 55, 75, 65, 115, 120]; // Sum = 750 pt
+        const sevRows = sevItems.map(it => [
+          it.instrument?.code || '—',
+          it.parameter || '—',
+          it.latestEngineeringValue !== null && it.latestEngineeringValue !== undefined ? formatNum(it.latestEngineeringValue) : '—',
+          it.unit || '',
+          it.deltaFromBaseline !== null && it.deltaFromBaseline !== undefined ? formatNum(it.deltaFromBaseline) : '—',
+          it.currentSeverity === 'NOT_EVALUATED' ? 'Not Evaluated' : (it.currentSeverity || 'Not Evaluated'),
+          normalizeLabel(it.quality || 'NOT_EVALUATED'),
+          it.effectiveRule?.name || 'No Rule',
+          formatPdfDateTime(it.timestamp, tz)
+        ]);
+
+        if (sevRows.length === 0) {
+          doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(PALETTE.muted).text('No instruments evaluated.');
+        } else {
+          drawTable(doc, sevHeaders, sevRows, sevWidths);
+        }
+
+        // Section 6: Alarm Summary (Landscape)
+        drawSectionHeader(doc, '6. Alarm Summary', 60);
+        const alarmList = data.alarmSummary?.alarms || [];
+        if (alarmList.length === 0) {
+          doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(PALETTE.muted)
+            .text('No canonical alarms were recorded during the selected reporting period.');
+        } else {
+          const alarmHeaders = ['ALARM', 'ASSET', 'PARAMETER', 'INITIAL', 'HIGHEST', 'STATUS', 'TRIGGERED', 'RESOLVED'];
+          const alarmWidths = [85, 90, 100, 60, 60, 75, 140, 140]; // Sum = 750 pt
+          const alarmRows = alarmList.map(a => {
+            const rawCode = a.code || String(a._id);
+            const almCode = (/^[0-9a-f]{24}$/i.test(rawCode)) ? `ALM-${rawCode.slice(-6).toUpperCase()}` : rawCode;
+            const almAssetCode = a.instrument?.code ||
+              a.linkedAsset?.instrument?.code ||
+              a.linkedAsset?.device?.code ||
+              a.linkedAsset?.gateway?.code ||
+              a.asset?.instrument?.code ||
+              a.asset?.code ||
+              a.instrumentId?.code ||
+              '—';
+            return [
+              almCode,
+              almAssetCode,
+              a.parameterCode || a.parameter || '—',
+              a.initialSeverity || '—',
+              a.highestSeverity || '—',
+              normalizeLabel(a.status),
+              formatPdfDateTime(a.triggeredAt, tz),
+              formatPdfDateTime(a.resolvedAt, tz)
+            ];
+          });
+          drawTable(doc, alarmHeaders, alarmRows, alarmWidths);
+
+          // Details block below table if requested
+          if (report.options?.includeAlarmDetails) {
+            alarmList.slice(0, 10).forEach(a => {
+              if (doc.y > doc.page.height - 60) {
+                doc.addPage({ size: 'A4', layout: doc.page.layout, margins: { top: 36, bottom: 36, left: 36, right: 36 } });
+              }
+              const rawCode = a.code || String(a._id);
+              const almCode = (/^[0-9a-f]{24}$/i.test(rawCode)) ? `ALM-${rawCode.slice(-6).toUpperCase()}` : rawCode;
+              const almAssetCode = a.instrument?.code ||
+                a.linkedAsset?.instrument?.code ||
+                a.linkedAsset?.device?.code ||
+                a.linkedAsset?.gateway?.code ||
+                a.asset?.instrument?.code ||
+                a.asset?.code ||
+                a.instrumentId?.code ||
+                '—';
+              const boxY = doc.y;
+              const boxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+              const boxHeight = 26;
+
+              doc.save()
+                .rect(doc.page.margins.left, boxY, boxWidth, boxHeight)
+                .fillColor('#F8F9FA').fill()
+                .rect(doc.page.margins.left, boxY, boxWidth, boxHeight)
+                .strokeColor(PALETTE.border).lineWidth(0.5).stroke();
+
+              doc.font('Helvetica-Bold').fontSize(7.5).fillColor(PALETTE.primary)
+                .text(`Alarm Details: ${almCode}   |   Asset: ${almAssetCode}`, doc.page.margins.left + 8, boxY + 5);
+
+              doc.font('Helvetica').fontSize(7.5).fillColor(PALETTE.dark)
+                .text(`Escalation: ${a.escalationPath || 'Standard'}   |   Acknowledged By: ${a.acknowledgedBy?.displayName || a.acknowledgedBy?.email || '—'}   |   Resolved By: ${a.resolvedBy?.displayName || a.resolvedBy?.email || '—'}${a.resolutionReason ? '   |   Reason: ' + a.resolutionReason : ''}`, doc.page.margins.left + 8, boxY + 15, { width: boxWidth - 16, lineBreak: false });
+
+              doc.restore();
+              doc.y = boxY + boxHeight + 4;
+              doc.x = doc.page.margins.left;
+            });
+          }
+        }
+
+        // Section 7: Investigation Summary (Landscape)
+        drawSectionHeader(doc, '7. Investigation Summary', 60);
+        const invList = data.investigationSummary?.investigations || [];
+        if (invList.length === 0) {
+          doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(PALETTE.muted)
+            .text('No investigations were recorded during the selected reporting period.');
+        } else {
+          const invHeaders = ['INVESTIGATION', 'SOURCE ALARM', 'ASSET', 'ASSIGNED TO', 'PRIORITY', 'STATUS', 'STARTED', 'COMPLETED'];
+          const invWidths = [100, 85, 85, 110, 60, 70, 120, 120]; // Sum = 750 pt
+          const invRows = invList.map(inv => {
+            const rawInvCode = inv.code || inv.investigationCode || String(inv._id);
+            const invCode = (/^[0-9a-f]{24}$/i.test(rawInvCode)) ? `INV-${rawInvCode.slice(-6).toUpperCase()}` : rawInvCode;
+
+            const rawSource = inv.sourceAlarm?.code ||
+              (inv.sourceAlarm?.id ? String(inv.sourceAlarm.id) : null) ||
+              (inv.alarmSnapshot?.alarmId ? String(inv.alarmSnapshot.alarmId) : null) ||
+              (inv.alarmId?.code || (inv.alarmId ? String(inv.alarmId._id || inv.alarmId) : null)) ||
+              '—';
+            const srcAlarm = (/^[0-9a-f]{24}$/i.test(rawSource)) ? `ALM-${rawSource.slice(-6).toUpperCase()}` : (rawSource || '—');
+
+            const invAssetCode = inv.instrument?.code ||
+              inv.asset?.instrument?.code ||
+              inv.asset?.device?.code ||
+              inv.asset?.gateway?.code ||
+              inv.asset?.code ||
+              inv.instrumentId?.code ||
+              '—';
+
+            return [
+              invCode,
+              srcAlarm,
+              invAssetCode,
+              inv.assignedTo?.displayName || inv.assignedTo?.name || inv.assignedTo?.email || '—',
+              inv.priority || 'MEDIUM',
+              normalizeLabel(inv.status),
+              formatPdfDateTime(inv.createdAt || inv.startedAt, tz),
+              formatPdfDateTime(inv.completedAt, tz)
+            ];
+          });
+          drawTable(doc, invHeaders, invRows, invWidths);
+
+          // Details block below table if requested
+          if (report.options?.includeInvestigationDetails) {
+            invList.slice(0, 10).forEach(inv => {
+              const rootCause = inv.findings?.rootCause || inv.rootCause || '—';
+              const action = inv.findings?.recommendedAction || inv.recommendedAction || '—';
+              const conclusion = inv.findings?.conclusion || inv.conclusion || '—';
+              if (rootCause !== '—' || action !== '—' || conclusion !== '—') {
+                if (doc.y > doc.page.height - 70) {
+                  doc.addPage({ size: 'A4', layout: doc.page.layout, margins: { top: 36, bottom: 36, left: 36, right: 36 } });
+                }
+                const rawInvCode = inv.code || inv.investigationCode || String(inv._id);
+                const invCode = (/^[0-9a-f]{24}$/i.test(rawInvCode)) ? `INV-${rawInvCode.slice(-6).toUpperCase()}` : rawInvCode;
+                const rawSource = inv.sourceAlarm?.code ||
+                  (inv.sourceAlarm?.id ? String(inv.sourceAlarm.id) : null) ||
+                  (inv.alarmSnapshot?.alarmId ? String(inv.alarmSnapshot.alarmId) : null) ||
+                  (inv.alarmId?.code || (inv.alarmId ? String(inv.alarmId._id || inv.alarmId) : null)) ||
+                  '—';
+                const srcAlarm = (/^[0-9a-f]{24}$/i.test(rawSource)) ? `ALM-${rawSource.slice(-6).toUpperCase()}` : (rawSource || '—');
+                const invAssetCode = inv.instrument?.code ||
+                  inv.asset?.instrument?.code ||
+                  inv.asset?.device?.code ||
+                  inv.asset?.gateway?.code ||
+                  inv.asset?.code ||
+                  inv.instrumentId?.code ||
+                  '—';
+                const boxY = doc.y;
+                const boxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+                const boxHeight = 36;
+
+                doc.save()
+                  .rect(doc.page.margins.left, boxY, boxWidth, boxHeight)
+                  .fillColor('#F8F9FA').fill()
+                  .rect(doc.page.margins.left, boxY, boxWidth, boxHeight)
+                  .strokeColor(PALETTE.border).lineWidth(0.5).stroke();
+
+                doc.font('Helvetica-Bold').fontSize(7.5).fillColor(PALETTE.primary)
+                  .text(`FINAL OUTCOME: ${invCode}   |   Asset: ${invAssetCode}   |   Source Alarm: ${srcAlarm}`, doc.page.margins.left + 8, boxY + 5);
+
+                doc.font('Helvetica-Bold').fontSize(7.5).fillColor(PALETTE.muted)
+                  .text('Conclusion: ', doc.page.margins.left + 8, boxY + 15, { continued: true });
+                doc.font('Helvetica').fillColor(PALETTE.dark).text(conclusion, { width: boxWidth - 80, lineBreak: false });
+
+                doc.font('Helvetica-Bold').fontSize(7.5).fillColor(PALETTE.muted)
+                  .text('Root Cause: ', doc.page.margins.left + 8, boxY + 24, { continued: true });
+                doc.font('Helvetica').fillColor(PALETTE.dark).text(`${rootCause}   |   Recommended Action: ${action}`, { width: boxWidth - 80, lineBreak: false });
+
+                doc.restore();
+                doc.y = boxY + boxHeight + 4;
+                doc.x = doc.page.margins.left;
+              }
+            });
+          }
+        }
+
+        // Section 8: Infrastructure Health (Landscape)
+        const devItems = data.infrastructureHealth?.devices?.items || [];
+        const gwItems = data.infrastructureHealth?.gateways?.items || [];
+
+        // Exact dynamic height check for entire Section 8:
+        let requiredInfraHeight = 22;
+        if (devItems.length > 0) requiredInfraHeight += 12 + 18 + devItems.length * 18 + 6;
+        if (gwItems.length > 0) requiredInfraHeight += 12 + 18 + gwItems.length * 18 + 6;
+
+        drawSectionHeader(doc, '8. Infrastructure Health', requiredInfraHeight);
+
+        if (devItems.length > 0) {
+          doc.font('Helvetica-Bold').fontSize(8).fillColor(PALETTE.dark).text('Device Fleet Inventory', doc.page.margins.left, doc.y);
+          doc.moveDown(0.15);
+          const devHeaders = ['DEVICE', 'MODEL', 'COMMISSIONING', 'CONNECTIVITY', 'SENSORS', 'GATEWAY', 'LAST TELEMETRY'];
+          const devWidths = [95, 85, 95, 85, 65, 150, 175]; // Sum = 750 pt
+          const devRows = devItems.map(d => [
+            d.code || '—',
+            d.model || '—',
+            normalizeLabel(d.commissioningStatus || d.commissionedStatus),
+            normalizeLabel(d.runtimeConnectivity),
+            String(d.mappedSensorsCount ?? d.mappedSensorCount ?? 0),
+            d.gatewayMapping?.code || d.gateway?.code || '—',
+            formatPdfDateTime(d.lastTelemetry || d.lastSeenAt, tz)
+          ]);
+          drawTable(doc, devHeaders, devRows, devWidths);
+        }
+
+        if (gwItems.length > 0) {
+          const gwHeightNeeded = 12 + 18 + gwItems.length * 18 + 6;
+          if (doc.y + gwHeightNeeded > doc.page.height - doc.page.margins.bottom) {
+            doc.addPage({ size: 'A4', layout: doc.page.layout, margins: { top: 36, bottom: 36, left: 36, right: 36 } });
+          }
+          doc.font('Helvetica-Bold').fontSize(8).fillColor(PALETTE.dark).text('Gateway Fleet Inventory', doc.page.margins.left, doc.y);
+          doc.moveDown(0.15);
+          const gwHeaders = ['GATEWAY', 'MODEL', 'COMMISSIONING', 'CONNECTIVITY', 'MAPPED DEVICES', 'LAST SEEN'];
+          const gwWidths = [115, 95, 105, 95, 90, 250]; // Sum = 750 pt
+          const gwRows = gwItems.map(g => [
+            g.code || '—',
+            g.model || '—',
+            normalizeLabel(g.commissioningStatus || g.commissionedStatus),
+            normalizeLabel(g.runtimeConnectivity),
+            String(g.mappedDevicesCount ?? 0),
+            formatPdfDateTime(g.lastSeen || g.lastSeenAt, tz)
+          ]);
+          drawTable(doc, gwHeaders, gwRows, gwWidths);
+        }
+
+        // -------------------------------------------------------------------
+        // TRANSITION TO PORTRAIT FOR OPERATIONAL ATTENTION (Section 9)
+        // -------------------------------------------------------------------
+        doc.addPage({ size: 'A4', layout: 'portrait', margins: { top: 36, bottom: 36, left: 36, right: 36 } });
+
+        drawSectionHeader(doc, '9. Operational Attention', 100);
+        const attention = data.operationalAttention || {};
+        const attCounts = attention.counts || {};
+
+        doc.font('Helvetica').fontSize(8).fillColor(PALETTE.muted)
+          .text('Summary of monitoring conditions, telemetry status, and infrastructure items requiring operational review.', doc.page.margins.left, doc.y);
+        doc.moveDown(0.4);
+
+        // 4 KPI cards across portrait width (523 pt)
+        drawKpiRow(doc, [
+          { label: 'Engineering Attention', value: attCounts.engineeringAttentionCount ?? 0, color: (attCounts.engineeringAttentionCount ?? 0) > 0 ? PALETTE.sevS3 : PALETTE.dark },
+          { label: 'Monitoring Gaps', value: attCounts.monitoringGapsCount ?? 0, color: (attCounts.monitoringGapsCount ?? 0) > 0 ? PALETTE.sevS2 : PALETTE.dark },
+          { label: 'Infrastructure Attention', value: attCounts.infrastructureAttentionCount ?? 0, color: (attCounts.infrastructureAttentionCount ?? 0) > 0 ? PALETTE.sevS3 : PALETTE.dark },
+          { label: 'Workflow Attention', value: attCounts.workflowAttentionCount ?? 0, color: (attCounts.workflowAttentionCount ?? 0) > 0 ? PALETTE.sevS1 : PALETTE.dark }
+        ]);
+
+        // Condition count badge
+        const totalConditions = attCounts.totalAttentionItems ?? 0;
+        const bannerW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        doc.save()
+          .rect(doc.page.margins.left, doc.y, bannerW, 18)
+          .fillColor('#F1F5F9').fill()
+          .rect(doc.page.margins.left, doc.y, bannerW, 18)
+          .strokeColor(PALETTE.border).lineWidth(0.5).stroke();
+        doc.font('Helvetica-Bold').fontSize(7.5).fillColor(totalConditions > 0 ? PALETTE.sevS4 : PALETTE.sevS0)
+          .text(`ATTENTION CONDITIONS: ${totalConditions}`, doc.page.margins.left + 8, doc.y + 5, { continued: true });
+        doc.font('Helvetica').fontSize(7.5).fillColor(PALETTE.muted)
+          .text('   — Total identified condition items across active monitoring, configuration, and infrastructure components.');
+        doc.restore();
+        doc.y += 24;
+        doc.x = doc.page.margins.left;
+
+        const cats = attention.categories || {};
+
+        if (cats.engineeringAttention) {
+          const s4 = (cats.engineeringAttention.s4Instruments || []).map(i => i.code);
+          const s3 = (cats.engineeringAttention.s3Instruments || []).map(i => i.code);
+          const alms = (cats.engineeringAttention.activeAlarms || []).map(a => a.code);
+          const items = [];
+          if (s4.length > 0) items.push(`• Critical (S4) Instruments: ${s4.join(', ')}`);
+          if (s3.length > 0) items.push(`• Warning (S3) Instruments: ${s3.join(', ')}`);
+          if (alms.length > 0) items.push(`• Active Alarms: ${alms.join(', ')}`);
+          drawAttentionCategory(doc, 'Engineering Attention', items);
+        }
+
+        if (cats.monitoringGaps) {
+          const noTel = (cats.monitoringGaps.noTelemetryInstruments || []).map(i => i.code);
+          const stale = (cats.monitoringGaps.staleInstruments || []).map(i => i.code);
+          const unpos = (cats.monitoringGaps.unpositionedInstruments || []).map(i => i.code);
+          const noRule = (cats.monitoringGaps.noSeverityRuleInstruments || []).map(i => i.code);
+          const items = [];
+          if (noTel.length > 0) items.push(`• No Telemetry Recorded: ${noTel.join(', ')}`);
+          if (stale.length > 0) items.push(`• Stale Telemetry Readings: ${stale.join(', ')}`);
+          if (unpos.length > 0) items.push(`• Unpositioned Instruments: ${unpos.join(', ')}`);
+          if (noRule.length > 0) items.push(`• Missing Severity Evaluation Rule: ${noRule.join(', ')}`);
+          drawAttentionCategory(doc, 'Monitoring Gaps', items);
+        }
+
+        if (cats.infrastructureAttention) {
+          const offDev = (cats.infrastructureAttention.offlineDevices || []).map(d => d.code);
+          const offGw = (cats.infrastructureAttention.offlineGateways || []).map(g => g.code);
+          const items = [];
+          if (offDev.length > 0) items.push(`• Offline Communication Devices: ${offDev.join(', ')}`);
+          if (offGw.length > 0) items.push(`• Offline Field Gateways: ${offGw.join(', ')}`);
+          drawAttentionCategory(doc, 'Infrastructure Attention', items);
+        }
+
+        if (cats.workflowAttention) {
+          const activeInvs = (cats.workflowAttention.activeInvestigations || []).map(i => i.code);
+          const items = [];
+          if (activeInvs.length > 0) items.push(`• Active Engineering Investigations: ${activeInvs.join(', ')}`);
+          drawAttentionCategory(doc, 'Workflow Attention', items);
+        }
+
         break;
       }
 

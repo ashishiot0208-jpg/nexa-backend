@@ -100,7 +100,12 @@ function buildReportMetadata({ reportType, project, from, to, user, filters = {}
       to: to ? to.toISOString() : null
     },
     generatedAt: new Date().toISOString(),
-    generatedBy: user?.displayName || user?.email || user?.userId || 'SYSTEM',
+    generatedBy: user?.displayName || user?.email || (user?.userId && !/^[0-9a-f]{24}$/i.test(user?.userId) ? user.userId : null) || 'System User',
+    user: user ? {
+      displayName: user.displayName || null,
+      email: user.email || null,
+      role: user.role || null
+    } : null,
     filters
   };
 }
@@ -125,8 +130,11 @@ export async function getProjectMonitoringReport({
   const { from, to } = resolveReportTimeRange({ from: rawFrom, to: rawTo, period });
   const timeQuery = from ? { $gte: from, $lte: to } : { $lte: to };
 
+  const effectiveOrgId = organizationId || project.organizationId;
+  const orgFilter = { organizationId: effectiveOrgId };
+
   // Fetch site names
-  const sites = await Site.find({ projectId: project._id }).lean();
+  const sites = await Site.find({ projectId: project._id, ...orgFilter }).lean();
   const siteNames = sites.map(s => s.name).join(', ') || project.location || '—';
 
   // O(1) bulk fetch operational summaries for instruments
@@ -138,12 +146,12 @@ export async function getProjectMonitoringReport({
     canonicalAlarms,
     investigations
   ] = await Promise.all([
-    getProjectOperationalSummaries(project._id, project.organizationId),
-    Instrument.find({ projectId: project._id, status: { $ne: 'DELETED' } }).lean(),
-    Device.find({ projectId: project._id, status: { $ne: 'DECOMMISSIONED' } }).lean(),
-    ProjectGateway.find({ projectId: project._id, status: { $ne: 'DECOMMISSIONED' } }).lean(),
-    Alarm.find({ projectId: project._id, lifecycleVersion: 2, triggeredAt: timeQuery }).lean(),
-    Investigation.find({ projectId: project._id, lifecycleVersion: 1, createdAt: timeQuery }).lean()
+    getProjectOperationalSummaries(project._id, effectiveOrgId),
+    Instrument.find({ projectId: project._id, ...orgFilter, status: { $ne: 'DELETED' } }).lean(),
+    Device.find({ projectId: project._id, ...orgFilter, status: { $ne: 'DECOMMISSIONED' } }).lean(),
+    ProjectGateway.find({ projectId: project._id, ...orgFilter, status: { $ne: 'DECOMMISSIONED' } }).lean(),
+    Alarm.find({ projectId: project._id, ...orgFilter, lifecycleVersion: 2, triggeredAt: timeQuery }).lean(),
+    Investigation.find({ projectId: project._id, ...orgFilter, lifecycleVersion: 1, createdAt: timeQuery }).lean()
   ]);
 
   // Instrument coverage
@@ -333,7 +341,10 @@ export async function getInstrumentTrendReport({
   const project = await Project.findOne(projQuery).lean();
   if (!project) throw new ApiError(404, 'Project not found');
 
-  const instQuery = { projectId: project._id };
+  const effectiveOrgId = organizationId || project.organizationId;
+  const orgFilter = { organizationId: effectiveOrgId };
+
+  const instQuery = { projectId: project._id, ...orgFilter };
   if (mongoose.Types.ObjectId.isValid(instrumentId)) {
     instQuery._id = instrumentId;
   } else {
@@ -346,7 +357,7 @@ export async function getInstrumentTrendReport({
   const timeQuery = from ? { $gte: from, $lte: to } : { $lte: to };
 
   // Fetch channels for this instrument
-  const channels = await SensorChannel.find({ instrumentId: instrument._id }).lean();
+  const channels = await SensorChannel.find({ instrumentId: instrument._id, projectId: project._id, ...orgFilter }).lean();
 
   // Resolve target channel and parameterCode
   let targetChannel = null;
@@ -368,8 +379,8 @@ export async function getInstrumentTrendReport({
 
   // Catalogue & location context
   const [siteDoc, zoneDoc, catalogueDoc] = await Promise.all([
-    instrument.siteId ? Site.findById(instrument.siteId).lean() : null,
-    instrument.zoneId ? Zone.findById(instrument.zoneId).lean() : null,
+    instrument.siteId ? Site.findOne({ _id: instrument.siteId, ...orgFilter }).lean() : null,
+    instrument.zoneId ? Zone.findOne({ _id: instrument.zoneId, ...orgFilter }).lean() : null,
     instrument.sensor_uid || instrument.catalogCode ? Sensor.findOne({
       $or: [{ uid: instrument.sensor_uid }, { uid: instrument.catalogCode }]
     }).lean() : null
@@ -394,6 +405,7 @@ export async function getInstrumentTrendReport({
 
   const match = {
     projectId: project._id,
+    ...orgFilter,
     instrumentId: instrument._id,
     parameterCode: effectiveParamCode,
     observedAt: timeQuery
@@ -582,12 +594,16 @@ export async function getAlarmHistoryReport({
   const project = await Project.findOne(projQuery).lean();
   if (!project) throw new ApiError(404, 'Project not found');
 
+  const effectiveOrgId = organizationId || project.organizationId;
+  const orgFilter = { organizationId: effectiveOrgId };
+
   const { from, to } = resolveReportTimeRange({ from: rawFrom, to: rawTo, period });
   const timeQuery = from ? { $gte: from, $lte: to } : { $lte: to };
 
   // Explicit canonical lifecycleVersion 2 only!
   const query = {
     projectId: project._id,
+    ...orgFilter,
     lifecycleVersion: 2,
     triggeredAt: timeQuery
   };
@@ -605,7 +621,7 @@ export async function getAlarmHistoryReport({
     if (mongoose.Types.ObjectId.isValid(instrumentId)) {
       query.instrumentId = instrumentId;
     } else {
-      const inst = await Instrument.findOne({ projectId: project._id, code: instrumentId }).lean();
+      const inst = await Instrument.findOne({ projectId: project._id, ...orgFilter, code: instrumentId }).lean();
       if (inst) query.instrumentId = inst._id;
       else query.instrumentId = new mongoose.Types.ObjectId(); // force empty result if unknown
     }
@@ -649,7 +665,7 @@ export async function getAlarmHistoryReport({
   let eventsByAlarmId = new Map();
   if (detailed && alarms.length > 0) {
     const alarmIds = alarms.map(a => a._id);
-    const events = await AlarmEvent.find({ alarmId: { $in: alarmIds } })
+    const events = await AlarmEvent.find({ alarmId: { $in: alarmIds }, projectId: project._id })
       .sort({ createdAt: 1 })
       .populate('actorId', 'displayName email')
       .lean();
@@ -786,7 +802,10 @@ export async function getInvestigationReport({
   const project = await Project.findOne(projQuery).lean();
   if (!project) throw new ApiError(404, 'Project not found');
 
-  const query = { projectId: project._id };
+  const effectiveOrgId = organizationId || project.organizationId;
+  const orgFilter = { organizationId: effectiveOrgId };
+
+  const query = { projectId: project._id, ...orgFilter };
   if (mongoose.Types.ObjectId.isValid(investigationId)) {
     query._id = investigationId;
   } else {
@@ -808,11 +827,11 @@ export async function getInvestigationReport({
 
   // Chronological InvestigationEvents & InvestigationNotes
   const [events, findings] = await Promise.all([
-    InvestigationEvent.find({ investigationId: investigation._id })
+    InvestigationEvent.find({ investigationId: investigation._id, projectId: project._id })
       .sort({ createdAt: 1 })
       .populate('actorId', 'displayName email')
       .lean(),
-    InvestigationNote.find({ investigationId: investigation._id })
+    InvestigationNote.find({ investigationId: investigation._id, projectId: project._id })
       .sort({ createdAt: 1 })
       .populate('createdBy', 'displayName email')
       .lean()
@@ -989,11 +1008,15 @@ export async function getInvestigationSummaryReport({
   const project = await Project.findOne(projQuery).lean();
   if (!project) throw new ApiError(404, 'Project not found');
 
+  const effectiveOrgId = organizationId || project.organizationId;
+  const orgFilter = { organizationId: effectiveOrgId };
+
   const { from, to } = resolveReportTimeRange({ from: rawFrom, to: rawTo, period });
   const timeQuery = from ? { $gte: from, $lte: to } : { $lte: to };
 
   const query = {
     projectId: project._id,
+    ...orgFilter,
     lifecycleVersion: 1,
     createdAt: timeQuery
   };
@@ -1005,7 +1028,7 @@ export async function getInvestigationSummaryReport({
     if (mongoose.Types.ObjectId.isValid(instrumentId)) {
       query.instrumentId = instrumentId;
     } else {
-      const inst = await Instrument.findOne({ projectId: project._id, code: instrumentId }).lean();
+      const inst = await Instrument.findOne({ projectId: project._id, ...orgFilter, code: instrumentId }).lean();
       if (inst) query.instrumentId = inst._id;
       else query.instrumentId = new mongoose.Types.ObjectId();
     }
@@ -1049,9 +1072,14 @@ export async function getInvestigationSummaryReport({
     parameter: inv.parameterCode || null,
     sourceAlarm: inv.alarmId ? {
       id: inv.alarmId._id,
-      code: inv.alarmId.title,
+      code: inv.alarmId.code || inv.alarmId.title,
       title: inv.alarmId.title
-    } : null,
+    } : (inv.alarmSnapshot ? {
+      id: inv.alarmSnapshot.alarmId || inv.alarmId,
+      code: inv.alarmSnapshot.code || (inv.alarmSnapshot.alarmId ? `ALM-${String(inv.alarmSnapshot.alarmId).slice(-6).toUpperCase()}` : inv.alarmSnapshot.title),
+      title: inv.alarmSnapshot.title
+    } : (inv.alarmId ? { id: inv.alarmId, code: `ALM-${String(inv.alarmId).slice(-6).toUpperCase()}` } : null)),
+    alarmSnapshot: inv.alarmSnapshot || null,
     linkedAlarm: inv.alarmId ? {
       id: inv.alarmId._id,
       title: inv.alarmId.title,
@@ -1130,11 +1158,14 @@ export async function getInfrastructureHealthReport({
   const project = await Project.findOne(projQuery).lean();
   if (!project) throw new ApiError(404, 'Project not found');
 
+  const effectiveOrgId = organizationId || project.organizationId;
+  const orgFilter = { organizationId: effectiveOrgId };
+
   const [devices, gateways, sdms, dgms] = await Promise.all([
-    Device.find({ projectId: project._id, status: { $ne: 'DECOMMISSIONED' } }).lean(),
-    ProjectGateway.find({ projectId: project._id, status: { $ne: 'DECOMMISSIONED' } }).lean(),
-    SensorDeviceMapping.find({ projectId: project._id, status: 'ACTIVE' }).lean(),
-    DeviceGatewayMapping.find({ projectId: project._id, status: 'ACTIVE' }).populate('gatewayAssetId', 'gatewayId name').lean()
+    Device.find({ projectId: project._id, ...orgFilter, status: { $ne: 'DECOMMISSIONED' } }).lean(),
+    ProjectGateway.find({ projectId: project._id, ...orgFilter, status: { $ne: 'DECOMMISSIONED' } }).lean(),
+    SensorDeviceMapping.find({ projectId: project._id, ...orgFilter, status: 'ACTIVE' }).lean(),
+    DeviceGatewayMapping.find({ projectId: project._id, ...orgFilter, status: 'ACTIVE' }).populate('gatewayAssetId', 'gatewayId name').lean()
   ]);
 
   // Maps for sensor-device and device-gateway counts
@@ -1272,10 +1303,13 @@ export async function getSeveritySummaryReport({
   const project = await Project.findOne(projQuery).lean();
   if (!project) throw new ApiError(404, 'Project not found');
 
+  const effectiveOrgId = organizationId || project.organizationId;
+  const orgFilter = { organizationId: effectiveOrgId };
+
   // Bulk fetch operational summaries and active severity rules
   const [summaries, activeRules] = await Promise.all([
-    getProjectOperationalSummaries(project._id, project.organizationId),
-    EngineeringSeverityRule.find({ projectId: project._id, status: 'ACTIVE' }).lean()
+    getProjectOperationalSummaries(project._id, effectiveOrgId),
+    EngineeringSeverityRule.find({ projectId: project._id, ...orgFilter, status: 'ACTIVE' }).lean()
   ]);
 
   const severityCounts = {
@@ -1370,6 +1404,433 @@ export async function getSeveritySummaryReport({
         severityDistribution: severityCounts
       },
       instruments: instrumentRows
+    }
+  };
+}
+
+// =========================================================================
+// 7. OVERALL PROJECT MONITORING REPORT (PHASE C8C)
+// =========================================================================
+
+/**
+ * Phase C8C: Overall Project Monitoring Report
+ * Consolidates project monitoring, current instrument status, trend summaries,
+ * engineering severity, alarm history, investigations, infrastructure health,
+ * and operational attention into one unified document.
+ * Coordinates existing canonical report methods without redundant recalculation.
+ */
+export async function getOverallProjectReport({
+  projectId,
+  organizationId = null,
+  from: rawFrom,
+  to: rawTo,
+  period,
+  options = {},
+  user = null
+}) {
+  const projQuery = { _id: projectId };
+  if (organizationId) projQuery.organizationId = organizationId;
+  const project = await Project.findOne(projQuery).lean();
+  if (!project) throw new ApiError(404, 'Project not found');
+
+  const { from, to } = resolveReportTimeRange({ from: rawFrom, to: rawTo, period });
+  const timeQuery = from ? { $gte: from, $lte: to } : { $lte: to };
+
+  const includeTrendCharts = options.includeTrendCharts !== false && options.includeTrendCharts !== 'false' && options.includeTrendCharts !== '0';
+  const includeAlarmDetails = options.includeAlarmDetails !== false && options.includeAlarmDetails !== 'false' && options.includeAlarmDetails !== '0';
+  const includeInvestigationDetails = options.includeInvestigationDetails !== false && options.includeInvestigationDetails !== 'false' && options.includeInvestigationDetails !== '0';
+
+  const effectiveOrgId = organizationId || project.organizationId;
+  const orgFilter = { organizationId: effectiveOrgId };
+
+  // 1. Compose existing canonical services in parallel
+  const [
+    monitoringReport,
+    severityReport,
+    alarmsReport,
+    investigationReport,
+    infrastructureReport,
+    operationalSummaries,
+    trendAggs,
+    sites
+  ] = await Promise.all([
+    getProjectMonitoringReport({ projectId, organizationId: effectiveOrgId, from: rawFrom, to: rawTo, period, user }),
+    getSeveritySummaryReport({ projectId, organizationId: effectiveOrgId, user }),
+    getAlarmHistoryReport({
+      projectId,
+      organizationId: effectiveOrgId,
+      from: rawFrom,
+      to: rawTo,
+      period,
+      detailed: includeAlarmDetails,
+      limit: 1000,
+      isExport: true,
+      user
+    }),
+    getInvestigationSummaryReport({
+      projectId,
+      organizationId: effectiveOrgId,
+      from: rawFrom,
+      to: rawTo,
+      period,
+      limit: 1000,
+      isExport: true,
+      user
+    }),
+    getInfrastructureHealthReport({ projectId, organizationId: effectiveOrgId, user }),
+    getProjectOperationalSummaries(project._id, effectiveOrgId),
+    DerivedReading.aggregate([
+      {
+        $match: {
+          projectId: project._id,
+          ...orgFilter,
+          observedAt: timeQuery
+        }
+      },
+      {
+        $sort: { observedAt: 1 }
+      },
+      {
+        $group: {
+          _id: { instrumentId: '$instrumentId', parameterCode: '$parameterCode' },
+          firstValue: { $first: '$value' },
+          lastValue: { $last: '$value' },
+          min: { $min: '$value' },
+          max: { $max: '$value' },
+          avg: { $avg: '$value' },
+          sampleCount: { $sum: 1 }
+        }
+      }
+    ]),
+    Site.find({ projectId: project._id, ...orgFilter }).lean()
+  ]);
+
+  const siteNames = sites.map(s => s.name).join(', ') || project.location || '—';
+  const nowMs = Date.now();
+
+  // 2. Build Section 3: Current Instrument Status (Multi-channel representation)
+  const currentInstruments = operationalSummaries.map(s => {
+    const inst = s.instrument;
+    const channels = s.channels || [];
+    const channelStates = s.channelStates || {};
+
+    const isPositioned = s.location?.longitude !== null &&
+      s.location?.latitude !== null &&
+      Number.isFinite(s.location?.longitude) &&
+      Number.isFinite(s.location?.latitude) &&
+      !(s.location.longitude === 0 && s.location.latitude === 0);
+
+    const channelRows = channels.map(ch => {
+      const state = channelStates[ch.code] || {};
+      const hasTelemetry = state.value !== null && state.value !== undefined && state.observedAt;
+      let freshness = 'No Telemetry';
+      if (hasTelemetry) {
+        const ageMs = nowMs - new Date(state.observedAt).getTime();
+        const expectedIntervalMs = Math.max(60, s.connection?.device?.expectedIntervalSec || 900) * 1000;
+        // Reporting if observed within 24h or 4 communication intervals
+        if (ageMs <= Math.max(24 * 3600 * 1000, expectedIntervalMs * 4)) {
+          freshness = 'Reporting';
+        } else {
+          freshness = 'Stale';
+        }
+      }
+
+      let sev = state.severity || 'NOT_EVALUATED';
+      if (sev === 'NOT EVALUATED') sev = 'NOT_EVALUATED';
+
+      let qual = state.quality || 'NOT_EVALUATED';
+      if (qual === 'NOT EVALUATED') qual = 'NOT_EVALUATED';
+
+      return {
+        code: ch.code,
+        parameterCode: ch.parameterCode,
+        label: state.label || ch.code,
+        latestValue: state.value !== null && state.value !== undefined ? Number(state.value) : null,
+        unit: state.unit || ch.engineeringUnit || ch.rawUnit || '',
+        deltaFromBaseline: state.deltaFromBaseline !== null && state.deltaFromBaseline !== undefined ? Number(state.deltaFromBaseline) : null,
+        severity: sev,
+        quality: qual,
+        lastObserved: state.observedAt || null,
+        freshness
+      };
+    });
+
+    // Instrument-level freshness is reporting if any channel is reporting
+    let instFreshness = 'No Telemetry';
+    if (channelRows.some(c => c.freshness === 'Reporting')) {
+      instFreshness = 'Reporting';
+    } else if (channelRows.some(c => c.freshness === 'Stale')) {
+      instFreshness = 'Stale';
+    }
+
+    return {
+      instrument: {
+        id: inst._id,
+        code: inst.code,
+        name: inst.name,
+        catalogCode: inst.catalogCode,
+        model: inst.model,
+        typeName: inst.typeName,
+        status: inst.status,
+        site: inst.siteName || siteNames,
+        zone: inst.zoneName || '—',
+        coordinates: isPositioned ? [s.location.longitude, s.location.latitude] : null,
+        depthM: s.location.depthM,
+        orientationDeg: s.location.orientationDeg,
+        isPositioned,
+        freshness: instFreshness
+      },
+      connection: {
+        device: s.connection?.device ? {
+          code: s.connection.device.deviceId,
+          name: s.connection.device.name,
+          connectivity: s.connection.device.runtimeStatus,
+          lastSeenAt: s.connection.device.lastSeenAt
+        } : null,
+        gateway: s.connection?.gateway ? {
+          code: s.connection.gateway.gatewayId,
+          name: s.connection.gateway.name,
+          connectivity: s.connection.gateway.runtimeStatus,
+          lastSeenAt: s.connection.gateway.lastSeenAt
+        } : null
+      },
+      channels: channelRows
+    };
+  });
+
+  // 3. Build Section 4: Trend Summary
+  const trendMap = new Map();
+  for (const t of trendAggs) {
+    const k = `${t._id.instrumentId}:${t._id.parameterCode}`;
+    trendMap.set(k, t);
+  }
+
+  const trendItems = [];
+  for (const s of operationalSummaries) {
+    const inst = s.instrument;
+    const channels = s.channels || [];
+    for (const ch of channels) {
+      const k = `${inst._id}:${ch.parameterCode}`;
+      const agg = trendMap.get(k);
+      if (agg && agg.sampleCount > 0) {
+        trendItems.push({
+          instrumentId: inst._id,
+          instrumentCode: inst.code,
+          instrumentName: inst.name,
+          parameterCode: ch.parameterCode,
+          parameterLabel: ch.code,
+          unit: ch.engineeringUnit || ch.rawUnit || '',
+          firstValue: Number(agg.firstValue.toFixed(4)),
+          lastValue: Number(agg.lastValue.toFixed(4)),
+          minimum: Number(agg.min.toFixed(4)),
+          maximum: Number(agg.max.toFixed(4)),
+          average: Number(agg.avg.toFixed(4)),
+          change: Number((agg.lastValue - agg.firstValue).toFixed(4)),
+          sampleCount: agg.sampleCount,
+          chartPoints: []
+        });
+      }
+    }
+  }
+
+  // If includeTrendCharts is true, fetch bounded time points for primary channels
+  if (includeTrendCharts && trendItems.length > 0) {
+    // Up to 8 primary trend channels for chart display
+    const chartCandidates = trendItems.slice(0, 8);
+    await Promise.all(chartCandidates.map(async (item) => {
+      const dailyPoints = await DerivedReading.aggregate([
+        {
+          $match: {
+            projectId: project._id,
+            ...orgFilter,
+            instrumentId: item.instrumentId,
+            parameterCode: item.parameterCode,
+            observedAt: timeQuery
+          }
+        },
+        {
+          $group: {
+            _id: {
+              bucket: { $dateTrunc: { date: '$observedAt', unit: 'day' } }
+            },
+            avg: { $avg: '$value' }
+          }
+        },
+        { $sort: { '_id.bucket': 1 } },
+        { $limit: 30 }
+      ]);
+      item.chartPoints = dailyPoints.map(p => ({
+        timestamp: p._id.bucket,
+        value: Number(p.avg.toFixed(4))
+      }));
+    }));
+  }
+
+  // 4. Build Section 9: Operational Attention (Composed from existing canonical states)
+  // Engineering Attention
+  const s4Instruments = severityReport.data.instruments.filter(i => i.currentSeverity === 'S4');
+  const s3Instruments = severityReport.data.instruments.filter(i => i.currentSeverity === 'S3');
+  const activeAlarms = (alarmsReport.data.alarms || []).filter(a => a.status === 'OPEN' || a.status === 'ACKNOWLEDGED' || a.status === 'ACTIVE');
+
+  // Monitoring Gaps
+  const noTelemetryInstruments = currentInstruments.filter(ci => ci.instrument.freshness === 'No Telemetry');
+  const staleInstruments = currentInstruments.filter(ci => ci.instrument.freshness === 'Stale');
+  const unpositionedInstruments = severityReport.data.instruments.filter(i => !i.instrument.isPositioned);
+  const noSeverityRuleInstruments = severityReport.data.instruments.filter(i => !i.effectiveRule || i.currentSeverity === 'NOT_EVALUATED');
+
+  // Infrastructure Attention
+  const rawDevs = Array.isArray(infrastructureReport.data.devices) ? infrastructureReport.data.devices : (infrastructureReport.data.devices?.items || []);
+  const rawGws = Array.isArray(infrastructureReport.data.gateways) ? infrastructureReport.data.gateways : (infrastructureReport.data.gateways?.items || []);
+  const offlineDevices = rawDevs.filter(d => d.runtimeConnectivity === 'OFFLINE');
+  const offlineGateways = rawGws.filter(g => g.runtimeConnectivity === 'OFFLINE');
+
+  // Workflow Attention
+  const activeInvestigations = (investigationReport.data.investigations || []).filter(inv => inv.status === 'OPEN' || inv.status === 'IN_PROGRESS');
+
+  const operationalAttention = {
+    counts: {
+      engineeringAttentionCount: s4Instruments.length + s3Instruments.length + activeAlarms.length,
+      monitoringGapsCount: noTelemetryInstruments.length + staleInstruments.length + unpositionedInstruments.length + noSeverityRuleInstruments.length,
+      infrastructureAttentionCount: offlineDevices.length + offlineGateways.length,
+      workflowAttentionCount: activeInvestigations.length,
+      totalAttentionItems: (
+        s4Instruments.length + s3Instruments.length + activeAlarms.length +
+        noTelemetryInstruments.length + staleInstruments.length + unpositionedInstruments.length + noSeverityRuleInstruments.length +
+        offlineDevices.length + offlineGateways.length +
+        activeInvestigations.length
+      )
+    },
+    categories: {
+      engineeringAttention: {
+        title: 'Engineering Attention',
+        s4Instruments: s4Instruments.map(i => ({ code: i.instrument.code, name: i.instrument.name, severity: i.currentSeverity, value: i.latestEngineeringValue, unit: i.unit })),
+        s3Instruments: s3Instruments.map(i => ({ code: i.instrument.code, name: i.instrument.name, severity: i.currentSeverity, value: i.latestEngineeringValue, unit: i.unit })),
+        activeAlarms: activeAlarms.map(a => ({ code: a.code || a._id, asset: a.asset?.code || a.instrumentId?.code || '—', severity: a.currentSeverity || a.highestSeverity, status: a.status }))
+      },
+      monitoringGaps: {
+        title: 'Monitoring Gaps',
+        noTelemetryInstruments: noTelemetryInstruments.map(i => ({ code: i.instrument.code, name: i.instrument.name, site: i.instrument.site })),
+        staleInstruments: staleInstruments.map(i => ({ code: i.instrument.code, name: i.instrument.name, site: i.instrument.site })),
+        unpositionedInstruments: unpositionedInstruments.map(i => ({ code: i.instrument.code, name: i.instrument.name })),
+        noSeverityRuleInstruments: noSeverityRuleInstruments.map(i => ({ code: i.instrument.code, parameter: i.parameter, rule: 'No Rule' }))
+      },
+      infrastructureAttention: {
+        title: 'Infrastructure Attention',
+        offlineDevices: offlineDevices.map(d => ({ code: d.code, name: d.name, lastSeen: d.lastSeenAt })),
+        offlineGateways: offlineGateways.map(g => ({ code: g.code, name: g.name, lastSeen: g.lastSeenAt }))
+      },
+      workflowAttention: {
+        title: 'Workflow Attention',
+        activeInvestigations: activeInvestigations.map(inv => ({ code: inv.code, asset: inv.asset?.instrument?.code || inv.instrument?.code || inv.asset?.code || '—', priority: inv.priority, status: inv.status }))
+      }
+    }
+  };
+
+  // 5. Build Section 10: Appendix structured detail tables
+  const appendix = {
+    measurementSummary: currentInstruments.map(ci => ({
+      instrument: ci.instrument.code,
+      name: ci.instrument.name,
+      site: ci.instrument.site,
+      zone: ci.instrument.zone,
+      channelsCount: ci.channels.length,
+      channels: ci.channels
+    })),
+    trendStatistics: trendItems,
+    alarmHistory: alarmsReport.data.alarms || [],
+    investigationList: investigationReport.data.investigations || [],
+    infrastructureInventory: {
+      devices: rawDevs,
+      gateways: rawGws
+    }
+  };
+
+  const meta = buildReportMetadata({
+    reportType: 'OVERALL_PROJECT_MONITORING',
+    project,
+    from,
+    to,
+    user,
+    filters: {
+      period: period || (from ? 'custom' : '30d'),
+      includeTrendCharts,
+      includeAlarmDetails,
+      includeInvestigationDetails
+    }
+  });
+
+  return {
+    ...meta,
+    options: {
+      includeTrendCharts,
+      includeAlarmDetails,
+      includeInvestigationDetails
+    },
+    data: {
+      projectInformation: {
+        name: project.name,
+        code: project.code,
+        site: siteNames,
+        location: project.location || null,
+        timezone: project.timezone || 'UTC',
+        reportPeriod: {
+          from: from ? from.toISOString() : null,
+          to: to ? to.toISOString() : null,
+          preset: period || (from ? 'custom' : '30d')
+        },
+        generatedAt: meta.generatedAt,
+        generatedBy: meta.generatedBy
+      },
+      executiveSummary: monitoringReport.data,
+      currentInstrumentStatus: {
+        disclaimer: 'Latest reading available at report generation time.',
+        totalInstruments: currentInstruments.length,
+        instruments: currentInstruments
+      },
+      trendSummary: {
+        period: {
+          from: from ? from.toISOString() : null,
+          to: to.toISOString()
+        },
+        totalSeries: trendItems.length,
+        items: trendItems
+      },
+      severitySummary: severityReport.data,
+      alarmSummary: {
+        total: alarmsReport.data.summary?.total ?? 0,
+        open: alarmsReport.data.summary?.open ?? 0,
+        acknowledged: alarmsReport.data.summary?.acknowledged ?? 0,
+        resolved: alarmsReport.data.summary?.resolved ?? 0,
+        alarms: alarmsReport.data.alarms || []
+      },
+      investigationSummary: {
+        total: investigationReport.data.summary?.total ?? 0,
+        open: investigationReport.data.summary?.open ?? 0,
+        inProgress: investigationReport.data.summary?.inProgress ?? 0,
+        completed: investigationReport.data.summary?.completed ?? 0,
+        investigations: investigationReport.data.investigations || []
+      },
+      infrastructureHealth: {
+        summary: infrastructureReport.data.summary,
+        devices: {
+          summary: infrastructureReport.data.summary?.devices || {
+            total: (infrastructureReport.data.devices || []).length,
+            online: (infrastructureReport.data.devices || []).filter(d => d.runtimeConnectivity === 'ONLINE').length,
+            offline: (infrastructureReport.data.devices || []).filter(d => d.runtimeConnectivity === 'OFFLINE').length
+          },
+          items: infrastructureReport.data.devices || []
+        },
+        gateways: {
+          summary: infrastructureReport.data.summary?.gateways || {
+            total: (infrastructureReport.data.gateways || []).length,
+            online: (infrastructureReport.data.gateways || []).filter(g => g.runtimeConnectivity === 'ONLINE').length,
+            offline: (infrastructureReport.data.gateways || []).filter(g => g.runtimeConnectivity === 'OFFLINE').length
+          },
+          items: infrastructureReport.data.gateways || []
+        }
+      },
+      operationalAttention,
+      appendix
     }
   };
 }

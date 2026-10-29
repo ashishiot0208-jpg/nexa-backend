@@ -12,7 +12,8 @@ import {
   getInvestigationReport,
   getInvestigationSummaryReport,
   getInfrastructureHealthReport,
-  getSeveritySummaryReport
+  getSeveritySummaryReport,
+  getOverallProjectReport
 } from '../services/report.service.js';
 import { ApiError } from '../utils/api-error.js';
 import {
@@ -244,6 +245,98 @@ router.get(
       user: req.auth
     });
     res.json(report);
+  })
+);
+
+/**
+ * 7. Overall Project Monitoring Report (Phase C8C)
+ */
+router.get(
+  '/projects/:projectId/reports/overall',
+  requireProjectAccess,
+  asyncHandler(async (req, res) => {
+    const includeTrendCharts = req.query.includeTrendCharts !== 'false' && req.query.includeTrendCharts !== '0';
+    const includeAlarmDetails = req.query.includeAlarmDetails !== 'false' && req.query.includeAlarmDetails !== '0';
+    const includeInvestigationDetails = req.query.includeInvestigationDetails !== 'false' && req.query.includeInvestigationDetails !== '0';
+
+    const report = await getOverallProjectReport({
+      projectId: req.params.projectId,
+      organizationId: req.auth.organizationId,
+      from: req.query.from,
+      to: req.query.to,
+      period: req.query.period,
+      options: {
+        includeTrendCharts,
+        includeAlarmDetails,
+        includeInvestigationDetails
+      },
+      user: req.auth
+    });
+    res.json(report);
+  })
+);
+
+router.get(
+  '/projects/:projectId/reports/overall/pdf',
+  requireProjectAccess,
+  asyncHandler(async (req, res) => {
+    const includeTrendCharts = req.query.includeTrendCharts !== 'false' && req.query.includeTrendCharts !== '0';
+    const includeAlarmDetails = req.query.includeAlarmDetails !== 'false' && req.query.includeAlarmDetails !== '0';
+    const includeInvestigationDetails = req.query.includeInvestigationDetails !== 'false' && req.query.includeInvestigationDetails !== '0';
+
+    const report = await getOverallProjectReport({
+      projectId: req.params.projectId,
+      organizationId: req.auth.organizationId,
+      from: req.query.from,
+      to: req.query.to,
+      period: req.query.period,
+      options: {
+        includeTrendCharts,
+        includeAlarmDetails,
+        includeInvestigationDetails
+      },
+      user: req.auth
+    });
+    const projectCode = report.project?.code || req.params.projectId;
+    const dateStr = new Date().toISOString().split('T')[0];
+    await sendExportResponse(res, {
+      reportType: 'OVERALL_PROJECT_MONITORING',
+      format: 'pdf',
+      reportData: report,
+      baseFilename: `NexaIQ_${projectCode}_Overall_Project_Report_${dateStr}`
+    });
+  })
+);
+
+router.get(
+  '/projects/:projectId/reports/overall/csv',
+  requireProjectAccess,
+  asyncHandler(async (req, res) => {
+    const includeTrendCharts = req.query.includeTrendCharts !== 'false' && req.query.includeTrendCharts !== '0';
+    const includeAlarmDetails = req.query.includeAlarmDetails !== 'false' && req.query.includeAlarmDetails !== '0';
+    const includeInvestigationDetails = req.query.includeInvestigationDetails !== 'false' && req.query.includeInvestigationDetails !== '0';
+
+    const report = await getOverallProjectReport({
+      projectId: req.params.projectId,
+      organizationId: req.auth.organizationId,
+      from: req.query.from,
+      to: req.query.to,
+      period: req.query.period,
+      options: {
+        includeTrendCharts,
+        includeAlarmDetails,
+        includeInvestigationDetails
+      },
+      user: req.auth
+    });
+    const projectCode = report.project?.code || req.params.projectId;
+    const dateStr = new Date().toISOString().split('T')[0];
+    await sendExportResponse(res, {
+      reportType: 'OVERALL_PROJECT_MONITORING',
+      format: 'csv',
+      reportData: report,
+      baseFilename: `NexaIQ_${projectCode}_Overall_Project_Report_${dateStr}`
+    });
   })
 );
 
@@ -707,6 +800,34 @@ router.get(
         format,
         reportData: report,
         baseFilename: `NexaIQ_${projectCode}_Severity_Summary_${dateStr}`
+      });
+    }
+
+    if (type === 'overall' || type === 'overall-project' || type === 'overall_project' || type === 'overall_project_monitoring') {
+      const includeTrendCharts = req.query.includeTrendCharts !== 'false' && req.query.includeTrendCharts !== '0';
+      const includeAlarmDetails = req.query.includeAlarmDetails !== 'false' && req.query.includeAlarmDetails !== '0';
+      const includeInvestigationDetails = req.query.includeInvestigationDetails !== 'false' && req.query.includeInvestigationDetails !== '0';
+
+      const report = await getOverallProjectReport({
+        projectId: req.params.projectId,
+        organizationId: req.auth.organizationId,
+        from: req.query.from,
+        to: req.query.to,
+        period: req.query.period,
+        options: {
+          includeTrendCharts,
+          includeAlarmDetails,
+          includeInvestigationDetails
+        },
+        user: req.auth
+      });
+      const projectCode = report.project?.code || req.params.projectId;
+      const dateStr = new Date().toISOString().split('T')[0];
+      return sendExportResponse(res, {
+        reportType: 'OVERALL_PROJECT_MONITORING',
+        format,
+        reportData: report,
+        baseFilename: `NexaIQ_${projectCode}_Overall_Project_Report_${dateStr}`
       });
     }
 

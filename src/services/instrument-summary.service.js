@@ -79,11 +79,12 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
   const installDate = instrument.installDate || instrument.commissionedAt || null;
 
   // 4. SensorChannels
-  const channels = context?.channelsMap?.get(String(instrument._id)) || await SensorChannel.find({ instrumentId: instrument._id }).lean();
+  const channels = context?.channelsMap?.get(String(instrument._id)) || await SensorChannel.find({ instrumentId: instrument._id, ...(organizationId ? { organizationId } : {}) }).lean();
 
   // 5. SensorDeviceMapping & DeviceGatewayMapping
   const sdm = context?.sdmMap?.get(String(instrument._id)) || await SensorDeviceMapping.findOne({
     projectId: instrument.projectId,
+    ...(organizationId ? { organizationId } : {}),
     sensorAssetId: instrument._id,
     status: 'ACTIVE'
   }).populate('deviceAssetId').lean();
@@ -118,6 +119,7 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
     // Device -> Gateway mapping
     const dgm = context?.dgmMap?.get(String(dev._id)) || await DeviceGatewayMapping.findOne({
       projectId: instrument.projectId,
+      ...(organizationId ? { organizationId } : {}),
       deviceAssetId: dev._id,
       status: 'ACTIVE'
     }).populate('gatewayAssetId').lean();
@@ -183,6 +185,7 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
   if (displayChannel) {
     latestDerived = context?.latestDerivedMap?.get(`${instrument._id}:${displayChannel.parameterCode}`) || await DerivedReading.findOne({
       instrumentId: instrument._id,
+      ...(organizationId ? { organizationId } : {}),
       parameterCode: displayChannel.parameterCode
     }).sort({ observedAt: -1 }).lean();
 
@@ -191,6 +194,7 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
     } else {
       latestRaw = context?.latestRawMap?.get(`${instrument._id}:${displayChannel.code}`) || await RawReading.findOne({
         instrumentId: instrument._id,
+        ...(organizationId ? { organizationId } : {}),
         channelCode: displayChannel.code
       }).sort({ sampleTime: -1 }).lean();
     }
@@ -218,6 +222,7 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
       ? context.resolveRule(instrument, displayChannel)
       : await resolveApplicableRule({
           projectId: instrument.projectId,
+          organizationId: organizationId || instrument.organizationId,
           instrumentId: instrument._id,
           catalogCode: instrument.catalogCode,
           parameterCode: displayChannel.parameterCode
@@ -240,6 +245,7 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
   if (severity === 'NOT EVALUATED' && displayChannel) {
     const ls = context?.latestStateMap?.get(`${instrument._id}:${displayChannel.parameterCode}`) || await LatestState.findOne({
       instrumentId: instrument._id,
+      ...(organizationId ? { organizationId } : {}),
       parameterCode: displayChannel.parameterCode
     }).lean();
     if (ls?.severityDetails?.evaluated && ls.severityDetails.level) {
@@ -266,7 +272,10 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
   // Must NOT be fake or hardcoded 85%. If no approved engineering rules exist, NOT EVALUATED
   let confidence = null;
   if (severity !== 'NOT EVALUATED') {
-    const decision = context?.decisionMap?.get(String(instrument._id)) || await DecisionSnapshot.findOne({ instrumentId: instrument._id })
+    const decision = context?.decisionMap?.get(String(instrument._id)) || await DecisionSnapshot.findOne({
+      instrumentId: instrument._id,
+      ...(organizationId ? { organizationId } : {})
+    })
       .sort({ evaluatedAt: -1 })
       .lean();
     if (Number.isFinite(decision?.confidence)) {
@@ -279,6 +288,7 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
   for (const ch of channels) {
     const d = context?.latestDerivedMap?.get(`${instrument._id}:${ch.parameterCode}`) || await DerivedReading.findOne({
       instrumentId: instrument._id,
+      ...(organizationId ? { organizationId } : {}),
       parameterCode: ch.parameterCode
     }).sort({ observedAt: -1 }).lean();
 
@@ -313,6 +323,7 @@ export async function getInstrumentOperationalSummary(instrumentId, organization
   // 11. Alarms
   const alarms = context?.alarmsMap?.get(String(instrument._id)) || await Alarm.find({
     instrumentId: instrument._id,
+    ...(organizationId ? { organizationId } : {}),
     state: { $nin: ['CONDITION_NORMALIZED', 'CLOSED'] }
   }).lean();
 
@@ -402,6 +413,8 @@ export async function getProjectOperationalSummaries(projectId, organizationId =
   const instIds = instruments.map(i => i._id);
   const sensorUids = [...new Set(instruments.map(x => x.sensor_uid || x.catalogCode).filter(Boolean))];
 
+  const orgFilter = organizationId ? { organizationId } : {};
+
   const [
     sites,
     zones,
@@ -417,19 +430,19 @@ export async function getProjectOperationalSummaries(projectId, organizationId =
     recentRaw,
     decisions
   ] = await Promise.all([
-    Site.find({ projectId }).lean(),
-    Zone.find({ projectId }).lean(),
-    SensorChannel.find({ projectId }).lean(),
-    SensorDeviceMapping.find({ projectId, status: 'ACTIVE' }).populate('deviceAssetId').lean(),
-    DeviceGatewayMapping.find({ projectId, status: 'ACTIVE' }).populate('gatewayAssetId').lean(),
+    Site.find({ projectId, ...orgFilter }).lean(),
+    Zone.find({ projectId, ...orgFilter }).lean(),
+    SensorChannel.find({ projectId, ...orgFilter }).lean(),
+    SensorDeviceMapping.find({ projectId, ...orgFilter, status: 'ACTIVE' }).populate('deviceAssetId').lean(),
+    DeviceGatewayMapping.find({ projectId, ...orgFilter, status: 'ACTIVE' }).populate('gatewayAssetId').lean(),
     Sensor.find({ uid: { $in: sensorUids } }).lean(),
     InstrumentCatalog.find({ code: { $in: sensorUids } }).lean(),
-    EngineeringSeverityRule.find({ projectId, status: 'ACTIVE' }).lean(),
-    LatestState.find({ projectId }).lean(),
-    Alarm.find({ projectId, state: { $nin: ['CONDITION_NORMALIZED', 'CLOSED'] } }).lean(),
-    DerivedReading.find({ instrumentId: { $in: instIds } }).sort({ observedAt: -1 }).limit(instIds.length * 20).lean(),
-    RawReading.find({ instrumentId: { $in: instIds } }).sort({ sampleTime: -1 }).limit(instIds.length * 20).lean(),
-    DecisionSnapshot.find({ instrumentId: { $in: instIds } }).sort({ evaluatedAt: -1 }).limit(instIds.length * 5).lean()
+    EngineeringSeverityRule.find({ projectId, ...orgFilter, status: 'ACTIVE' }).lean(),
+    LatestState.find({ projectId, ...orgFilter }).lean(),
+    Alarm.find({ projectId, ...orgFilter, state: { $nin: ['CONDITION_NORMALIZED', 'CLOSED'] } }).lean(),
+    DerivedReading.find({ projectId, ...orgFilter, instrumentId: { $in: instIds } }).sort({ observedAt: -1 }).limit(instIds.length * 20).lean(),
+    RawReading.find({ projectId, ...orgFilter, instrumentId: { $in: instIds } }).sort({ sampleTime: -1 }).limit(instIds.length * 20).lean(),
+    DecisionSnapshot.find({ projectId, ...orgFilter, instrumentId: { $in: instIds } }).sort({ evaluatedAt: -1 }).limit(instIds.length * 5).lean()
   ]);
 
   const instrumentsMap = new Map(instruments.map(i => [String(i._id), i]));
