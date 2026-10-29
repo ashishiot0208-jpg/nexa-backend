@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
 import {
@@ -35,6 +35,7 @@ function assertMutationAllowed(req) {
 router.get(
   '/projects/:projectId/investigations',
   requireProjectAccess,
+  requireProjectPermission('investigations.view'),
   asyncHandler(async (req, res) => {
     const {
       status,
@@ -81,8 +82,18 @@ const handleGetInvestigation = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
-router.get('/projects/:projectId/investigations/:investigationId', requireProjectAccess, handleGetInvestigation);
-router.get('/projects/:projectId/investigations/detail/:id', requireProjectAccess, handleGetInvestigation);
+router.get(
+  '/projects/:projectId/investigations/:investigationId',
+  requireProjectAccess,
+  requireProjectPermission('investigations.view'),
+  handleGetInvestigation
+);
+router.get(
+  '/projects/:projectId/investigations/detail/:id',
+  requireProjectAccess,
+  requireProjectPermission('investigations.view'),
+  handleGetInvestigation
+);
 
 /**
  * POST /api/v1/projects/:projectId/investigations
@@ -91,6 +102,7 @@ router.get('/projects/:projectId/investigations/detail/:id', requireProjectAcces
 router.post(
   '/projects/:projectId/investigations',
   requireProjectAccess,
+  requireProjectPermission('investigations.start'),
   asyncHandler(async (req, res) => {
     assertMutationAllowed(req);
 
@@ -164,10 +176,30 @@ const handleAssign = asyncHandler(async (req, res) => {
   res.json(updated);
 });
 
-router.post('/projects/:projectId/investigations/:id/assign', requireProjectAccess, handleAssign);
-router.patch('/projects/:projectId/investigations/:id/assign', requireProjectAccess, handleAssign);
-router.post('/projects/:projectId/investigations/:investigationId/assign', requireProjectAccess, handleAssign);
-router.patch('/projects/:projectId/investigations/:investigationId/assign', requireProjectAccess, handleAssign);
+router.post(
+  '/projects/:projectId/investigations/:id/assign',
+  requireProjectAccess,
+  requireProjectPermission('investigations.assign'),
+  handleAssign
+);
+router.patch(
+  '/projects/:projectId/investigations/:id/assign',
+  requireProjectAccess,
+  requireProjectPermission('investigations.assign'),
+  handleAssign
+);
+router.post(
+  '/projects/:projectId/investigations/:investigationId/assign',
+  requireProjectAccess,
+  requireProjectPermission('investigations.assign'),
+  handleAssign
+);
+router.patch(
+  '/projects/:projectId/investigations/:investigationId/assign',
+  requireProjectAccess,
+  requireProjectPermission('investigations.assign'),
+  handleAssign
+);
 
 /**
  * POST & PATCH /api/v1/projects/:projectId/investigations/:id/start
@@ -195,10 +227,30 @@ const handleStart = asyncHandler(async (req, res) => {
   res.json(updated);
 });
 
-router.post('/projects/:projectId/investigations/:id/start', requireProjectAccess, handleStart);
-router.patch('/projects/:projectId/investigations/:id/start', requireProjectAccess, handleStart);
-router.post('/projects/:projectId/investigations/:investigationId/start', requireProjectAccess, handleStart);
-router.patch('/projects/:projectId/investigations/:investigationId/start', requireProjectAccess, handleStart);
+router.post(
+  '/projects/:projectId/investigations/:id/start',
+  requireProjectAccess,
+  requireProjectPermission('investigations.start'),
+  handleStart
+);
+router.patch(
+  '/projects/:projectId/investigations/:id/start',
+  requireProjectAccess,
+  requireProjectPermission('investigations.start'),
+  handleStart
+);
+router.post(
+  '/projects/:projectId/investigations/:investigationId/start',
+  requireProjectAccess,
+  requireProjectPermission('investigations.start'),
+  handleStart
+);
+router.patch(
+  '/projects/:projectId/investigations/:investigationId/start',
+  requireProjectAccess,
+  requireProjectPermission('investigations.start'),
+  handleStart
+);
 
 /**
  * POST /api/v1/projects/:projectId/investigations/:id/findings
@@ -228,8 +280,18 @@ const handleAddFinding = asyncHandler(async (req, res) => {
   res.status(201).json(result);
 });
 
-router.post('/projects/:projectId/investigations/:id/findings', requireProjectAccess, handleAddFinding);
-router.post('/projects/:projectId/investigations/:investigationId/findings', requireProjectAccess, handleAddFinding);
+router.post(
+  '/projects/:projectId/investigations/:id/findings',
+  requireProjectAccess,
+  requireProjectPermission('investigations.addFinding'),
+  handleAddFinding
+);
+router.post(
+  '/projects/:projectId/investigations/:investigationId/findings',
+  requireProjectAccess,
+  requireProjectPermission('investigations.addFinding'),
+  handleAddFinding
+);
 
 /**
  * POST & PATCH /api/v1/projects/:projectId/investigations/:id/complete
@@ -260,9 +322,29 @@ const handleComplete = asyncHandler(async (req, res) => {
   res.json(updated);
 });
 
-router.post('/projects/:projectId/investigations/:id/complete', requireProjectAccess, handleComplete);
-router.patch('/projects/:projectId/investigations/:id/complete', requireProjectAccess, handleComplete);
-router.post('/projects/:projectId/investigations/:investigationId/complete', requireProjectAccess, handleComplete);
-router.patch('/projects/:projectId/investigations/:investigationId/complete', requireProjectAccess, handleComplete);
+router.post(
+  '/projects/:projectId/investigations/:id/complete',
+  requireProjectAccess,
+  requireProjectPermission('investigations.complete'),
+  handleComplete
+);
+router.patch(
+  '/projects/:projectId/investigations/:id/complete',
+  requireProjectAccess,
+  requireProjectPermission('investigations.complete'),
+  handleComplete
+);
+router.post(
+  '/projects/:projectId/investigations/:investigationId/complete',
+  requireProjectAccess,
+  requireProjectPermission('investigations.complete'),
+  handleComplete
+);
+router.patch(
+  '/projects/:projectId/investigations/:investigationId/complete',
+  requireProjectAccess,
+  requireProjectPermission('investigations.complete'),
+  handleComplete
+);
 
 export default router;

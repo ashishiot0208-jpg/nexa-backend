@@ -7,7 +7,7 @@ import {
   Sensor, DeviceCatalogue, GatewayCatalogue, 
   SensorChannel, Site, Zone, User, DeviceTelemetry 
 } from '../models/index.js';
-import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from '../services/audit.service.js';
@@ -42,7 +42,7 @@ async function resolveProject(projectId) {
  * Returns planned configuration progress against actual registered assets.
  * All counts derived from actual DB asset records - never modifying plannedConfiguration.
  */
-router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, requireProjectPermission('commissioning.view'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId } = req.params;
   const project = await resolveProject(rawProjectId);
   const projectId = project._id;
@@ -298,7 +298,7 @@ router.get('/projects/:projectId/commissioning/summary', requireProjectAccess, a
  * 2. GET /projects/:projectId/commissioning/sensors
  * Returns all actual registered sensors with their resolved catalogue info & active device mapping.
  */
-router.get('/projects/:projectId/commissioning/sensors', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/commissioning/sensors', requireProjectAccess, requireProjectPermission('commissioning.view'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId } = req.params;
   const project = await resolveProject(rawProjectId);
   const projectId = project._id;
@@ -368,7 +368,7 @@ const bulkRegisterSensorsSchema = z.object({
   })).min(1, 'At least one sensor is required')
 });
 
-router.post('/projects/:projectId/commissioning/sensors/bulk-register', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/sensors/bulk-register', requireProjectAccess, requireProjectPermission('commissioning.register'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const project = await Project.findById(projectId).lean();
   if (!project) throw new ApiError(404, 'Project not found');
@@ -477,7 +477,7 @@ router.post('/projects/:projectId/commissioning/sensors/bulk-register', requireP
  * 4. GET /projects/:projectId/commissioning/devices
  * Returns all actual registered devices with catalogue info, capacity & active gateway mappings.
  */
-router.get('/projects/:projectId/commissioning/devices', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/commissioning/devices', requireProjectAccess, requireProjectPermission('commissioning.view'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId } = req.params;
   const project = await resolveProject(rawProjectId);
   const projectId = project._id;
@@ -622,7 +622,7 @@ const bulkRegisterDevicesSchema = z.object({
   })).min(1, 'At least one device is required')
 });
 
-router.post('/projects/:projectId/commissioning/devices/bulk-register', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/devices/bulk-register', requireProjectAccess, requireProjectPermission('commissioning.register'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const project = await Project.findById(projectId).lean();
   if (!project) throw new ApiError(404, 'Project not found');
@@ -713,7 +713,7 @@ router.post('/projects/:projectId/commissioning/devices/bulk-register', requireP
  * 6. GET /projects/:projectId/commissioning/gateways
  * Returns all actual registered gateways with catalogue info & capacity.
  */
-router.get('/projects/:projectId/commissioning/gateways', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/commissioning/gateways', requireProjectAccess, requireProjectPermission('commissioning.view'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId } = req.params;
   const project = await resolveProject(rawProjectId);
   const projectId = project._id;
@@ -823,7 +823,7 @@ const bulkRegisterGatewaysSchema = z.object({
   })).min(1, 'At least one gateway is required')
 });
 
-router.post('/projects/:projectId/commissioning/gateways/bulk-register', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/gateways/bulk-register', requireProjectAccess, requireProjectPermission('commissioning.register'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const project = await Project.findById(projectId).lean();
   if (!project) throw new ApiError(404, 'Project not found');
@@ -918,7 +918,7 @@ const bulkSensorDeviceMappingSchema = z.object({
   })).optional()
 });
 
-router.post('/projects/:projectId/commissioning/sensor-device-mappings/bulk', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/sensor-device-mappings/bulk', requireProjectAccess, requireProjectPermission('commissioning.map'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const { deviceAssetId, sensorAssetIds, autoAssignSlots, slotAssignments } = bulkSensorDeviceMappingSchema.parse(req.body);
 
@@ -1087,7 +1087,7 @@ router.post('/projects/:projectId/commissioning/sensor-device-mappings/bulk', re
  * 9. POST /projects/:projectId/commissioning/sensor-device-mappings/unassign
  * Unassigns sensor(s) from their active device mapping without destroying historical record.
  */
-router.post('/projects/:projectId/commissioning/sensor-device-mappings/unassign', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/sensor-device-mappings/unassign', requireProjectAccess, requireProjectPermission('commissioning.map'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const sensorAssetIds = req.body.sensorAssetIds || (req.body.sensorAssetId ? [req.body.sensorAssetId] : []);
 
@@ -1143,7 +1143,7 @@ const bulkDeviceGatewayMappingSchema = z.object({
   deviceAssetIds: z.array(z.string()).min(1, 'At least one device must be selected')
 });
 
-router.post('/projects/:projectId/commissioning/device-gateway-mappings/bulk', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/device-gateway-mappings/bulk', requireProjectAccess, requireProjectPermission('commissioning.map'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const { gatewayAssetId, deviceAssetIds } = bulkDeviceGatewayMappingSchema.parse(req.body);
 
@@ -1259,7 +1259,7 @@ router.post('/projects/:projectId/commissioning/device-gateway-mappings/bulk', r
  * 11. POST /projects/:projectId/commissioning/device-gateway-mappings/unassign
  * Unassigns device(s) from their active gateway mapping.
  */
-router.post('/projects/:projectId/commissioning/device-gateway-mappings/unassign', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/device-gateway-mappings/unassign', requireProjectAccess, requireProjectPermission('commissioning.map'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const deviceAssetIds = req.body.deviceAssetIds || (req.body.deviceAssetId ? [req.body.deviceAssetId] : []);
 
@@ -1304,7 +1304,7 @@ router.post('/projects/:projectId/commissioning/device-gateway-mappings/unassign
  * 10. GET /projects/:projectId/commissioning/sensors/:instrumentId/setup
  * Returns complete setup context for an existing registered Sensor (Instrument)
  */
-router.get('/projects/:projectId/commissioning/sensors/:instrumentId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/commissioning/sensors/:instrumentId/setup', requireProjectAccess, requireProjectPermission('commissioning.view'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId, instrumentId } = req.params;
   const project = await resolveProject(rawProjectId);
   const resolvedProjectId = project._id;
@@ -1372,7 +1372,7 @@ router.get('/projects/:projectId/commissioning/sensors/:instrumentId/setup', req
  * Updates installation, engineering parameters, channels, calibration, baseline and lifecycle for an existing Sensor.
  * Operates on the SAME Instrument record — never creates duplicate assets.
  */
-router.put('/projects/:projectId/commissioning/sensors/:instrumentId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+router.put('/projects/:projectId/commissioning/sensors/:instrumentId/setup', requireProjectAccess, requireProjectPermission('commissioning.configure'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId, instrumentId } = req.params;
   const project = await resolveProject(rawProjectId);
   const resolvedProjectId = project._id;
@@ -1516,7 +1516,7 @@ router.put('/projects/:projectId/commissioning/sensors/:instrumentId/setup', req
  * 12. GET /projects/:projectId/commissioning/devices/:deviceId/setup
  * Returns complete setup context for an existing registered Device (Node / Logger).
  */
-router.get('/projects/:projectId/commissioning/devices/:deviceId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/commissioning/devices/:deviceId/setup', requireProjectAccess, requireProjectPermission('commissioning.view'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId, deviceId: deviceIdParam } = req.params;
   const project = await resolveProject(rawProjectId);
   const resolvedProjectId = project._id;
@@ -1633,7 +1633,7 @@ router.get('/projects/:projectId/commissioning/devices/:deviceId/setup', require
  * Updates installation, network identity, firmware, and commissioning status for an existing Device.
  * Operates on the SAME Device record.
  */
-router.put('/projects/:projectId/commissioning/devices/:deviceId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+router.put('/projects/:projectId/commissioning/devices/:deviceId/setup', requireProjectAccess, requireProjectPermission('commissioning.configure'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId, deviceId: deviceIdParam } = req.params;
   const project = await resolveProject(rawProjectId);
   const resolvedProjectId = project._id;
@@ -1814,7 +1814,7 @@ router.put('/projects/:projectId/commissioning/devices/:deviceId/setup', require
  * Runs read-only commissioning verification checks on an existing Device.
  * Does NOT mutate status, commissionedAt, commissionedBy, or existing mappings.
  */
-router.post('/projects/:projectId/commissioning/devices/:deviceId/verify', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/devices/:deviceId/verify', requireProjectAccess, requireProjectPermission('commissioning.configure'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId, deviceId: deviceIdParam } = req.params;
   const project = await resolveProject(rawProjectId);
   const resolvedProjectId = project._id;
@@ -2063,7 +2063,7 @@ router.post('/projects/:projectId/commissioning/devices/:deviceId/verify', requi
  * 15. GET /projects/:projectId/commissioning/gateways/:gatewayId/setup
  * Returns complete setup context for an existing registered Gateway.
  */
-router.get('/projects/:projectId/commissioning/gateways/:gatewayId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/commissioning/gateways/:gatewayId/setup', requireProjectAccess, requireProjectPermission('commissioning.view'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId, gatewayId: gatewayIdParam } = req.params;
   const project = await resolveProject(rawProjectId);
   const resolvedProjectId = project._id;
@@ -2155,7 +2155,7 @@ router.get('/projects/:projectId/commissioning/gateways/:gatewayId/setup', requi
  * Updates installation, network identity, active backhaul, and commissioning status for an existing Gateway.
  * Operates on the SAME Gateway record.
  */
-router.put('/projects/:projectId/commissioning/gateways/:gatewayId/setup', requireProjectAccess, asyncHandler(async (req, res) => {
+router.put('/projects/:projectId/commissioning/gateways/:gatewayId/setup', requireProjectAccess, requireProjectPermission('commissioning.configure'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId, gatewayId: gatewayIdParam } = req.params;
   const project = await resolveProject(rawProjectId);
   const resolvedProjectId = project._id;
@@ -2342,7 +2342,7 @@ router.put('/projects/:projectId/commissioning/gateways/:gatewayId/setup', requi
  * Runs read-only commissioning verification checks on an existing Gateway.
  * Does NOT mutate status, commissionedAt, commissionedBy, or existing mappings.
  */
-router.post('/projects/:projectId/commissioning/gateways/:gatewayId/verify', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/gateways/:gatewayId/verify', requireProjectAccess, requireProjectPermission('commissioning.configure'), asyncHandler(async (req, res) => {
   const { projectId: rawProjectId, gatewayId: gatewayIdParam } = req.params;
   const project = await resolveProject(rawProjectId);
   const resolvedProjectId = project._id;
@@ -2516,7 +2516,7 @@ router.post('/projects/:projectId/commissioning/gateways/:gatewayId/verify', req
  * Runs read-only Project commissioning verification checks.
  * Does NOT mutate Project.setupStatus, commissioningCompletedAt, assets, mappings, or plannedConfiguration.
  */
-router.post('/projects/:projectId/commissioning/verify', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/verify', requireProjectAccess, requireProjectPermission('commissioning.configure'), asyncHandler(async (req, res) => {
   const result = await validateProjectCommissioning(req.params.projectId);
   res.json(result);
 }));
@@ -2527,7 +2527,7 @@ router.post('/projects/:projectId/commissioning/verify', requireProjectAccess, a
  * Re-validates server-side, sets Project.setupStatus = COMMISSIONED,
  * writes commissioningCompletedAt, commissioningCompletedBy, and records audit.
  */
-router.post('/projects/:projectId/commissioning/confirm', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/commissioning/confirm', requireProjectAccess, requireProjectPermission('commissioning.finalize'), asyncHandler(async (req, res) => {
   const result = await confirmProjectCommissioning(req.params.projectId, req.auth.userId, req);
   res.json(result);
 }));

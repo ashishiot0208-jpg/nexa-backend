@@ -40,6 +40,7 @@ import commissioningRoutes from './routes/commissioning.routes.js';
 import severityRulesRoutes from './routes/severity-rules.routes.js';
 import alarmPolicyRoutes from './routes/alarm-policies.routes.js';
 import investigationRoutes from './routes/investigations.routes.js';
+import workforceRoutes from './routes/workforce.routes.js';
 import { openApiSpec } from './openapi.js';
 import { Notification } from './models/index.js';
 import { requireAuth } from './middleware/auth.js';
@@ -92,6 +93,7 @@ export function createApp() {
   app.use('/api/v1', severityRulesRoutes);
   app.use('/api/v1', alarmPolicyRoutes);
   app.use('/api/v1', investigationRoutes);
+  app.use('/api/v1', workforceRoutes);
   app.get('/api/v1/notifications', requireAuth, asyncHandler(async (req, res) => {
     const rows = await Notification.find({ organizationId: req.auth.organizationId, recipient: req.auth.email }).sort({ createdAt: -1 }).limit(100).lean();
     res.json(rows);

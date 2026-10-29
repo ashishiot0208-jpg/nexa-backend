@@ -14,7 +14,7 @@ import {
   SensorDeviceMapping,
   DeviceGatewayMapping
 } from '../models/index.js';
-import { requireAuth, requireProjectAccess, requireOrgRole } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, requireOrgRole, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from '../services/audit.service.js';
@@ -23,7 +23,7 @@ import { getInstrumentOperationalSummary, getProjectOperationalSummaries } from 
 const router = Router({ mergeParams: true });
 router.use(requireAuth);
 
-router.get('/projects/:projectId/geospatial', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/geospatial', requireProjectAccess, requireProjectPermission('map.view'), asyncHandler(async (req, res) => {
   console.log('[GEO] 1 route entered');
   const timer = setTimeout(() => {
     console.error('[GEO] request exceeded 10 seconds');
@@ -149,7 +149,7 @@ router.get('/projects/:projectId/geospatial', requireProjectAccess, asyncHandler
   });
 }));
 
-router.get('/projects/:projectId/map/instruments', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/map/instruments', requireProjectAccess, requireProjectPermission('map.view'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const organizationId = req.auth.organizationId;
 
@@ -215,7 +215,7 @@ router.get('/projects/:projectId/map/instruments', requireProjectAccess, asyncHa
   res.json(markers);
 }));
 
-router.get('/projects/:projectId/map/assets', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/map/assets', requireProjectAccess, requireProjectPermission('map.view'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const organizationId = req.auth.organizationId;
 

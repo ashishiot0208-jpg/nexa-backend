@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { EngineeringSeverityRule, validateRuleThresholds, Project, Instrument } from '../models/index.js';
-import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from '../services/audit.service.js';
@@ -12,7 +12,7 @@ router.use(requireAuth);
  * GET /projects/:projectId/severity-rules
  * List all engineering severity rules for a project.
  */
-router.get('/projects/:projectId/severity-rules', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/severity-rules', requireProjectAccess, requireProjectPermission('severityRules.view'), asyncHandler(async (req, res) => {
   const query = { projectId: req.params.projectId };
   if (req.query.status) query.status = String(req.query.status).toUpperCase();
   if (req.query.parameterCode) query.parameterCode = String(req.query.parameterCode);
@@ -26,7 +26,7 @@ router.get('/projects/:projectId/severity-rules', requireProjectAccess, asyncHan
  * POST /projects/:projectId/severity-rules
  * Create an engineering severity rule with monotonic threshold validation.
  */
-router.post('/projects/:projectId/severity-rules', requireProjectAccess, asyncHandler(async (req, res) => {
+router.post('/projects/:projectId/severity-rules', requireProjectAccess, requireProjectPermission('severityRules.configure'), asyncHandler(async (req, res) => {
   const {
     name,
     code,
@@ -118,7 +118,7 @@ router.post('/projects/:projectId/severity-rules', requireProjectAccess, asyncHa
  * GET /projects/:projectId/severity-rules/:id
  * Retrieve a specific severity rule by ID.
  */
-router.get('/projects/:projectId/severity-rules/:id', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/severity-rules/:id', requireProjectAccess, requireProjectPermission('severityRules.view'), asyncHandler(async (req, res) => {
   const rule = await EngineeringSeverityRule.findOne({
     _id: req.params.id,
     projectId: req.params.projectId
@@ -132,7 +132,7 @@ router.get('/projects/:projectId/severity-rules/:id', requireProjectAccess, asyn
  * PUT /projects/:projectId/severity-rules/:id
  * Update rule and increment version when thresholds, metric, mode, or unit change.
  */
-router.put('/projects/:projectId/severity-rules/:id', requireProjectAccess, asyncHandler(async (req, res) => {
+router.put('/projects/:projectId/severity-rules/:id', requireProjectAccess, requireProjectPermission('severityRules.configure'), asyncHandler(async (req, res) => {
   const rule = await EngineeringSeverityRule.findOne({
     _id: req.params.id,
     projectId: req.params.projectId
@@ -204,7 +204,7 @@ router.put('/projects/:projectId/severity-rules/:id', requireProjectAccess, asyn
  * PATCH /projects/:projectId/severity-rules/:id/status
  * Activate or deactivate a rule.
  */
-router.patch('/projects/:projectId/severity-rules/:id/status', requireProjectAccess, asyncHandler(async (req, res) => {
+router.patch('/projects/:projectId/severity-rules/:id/status', requireProjectAccess, requireProjectPermission('severityRules.activate'), asyncHandler(async (req, res) => {
   const { status } = req.body;
   if (!['ACTIVE', 'INACTIVE'].includes(status)) {
     throw new ApiError(400, 'status must be ACTIVE or INACTIVE');
@@ -251,7 +251,7 @@ router.patch('/projects/:projectId/severity-rules/:id/status', requireProjectAcc
  * DELETE /projects/:projectId/severity-rules/:id
  * Deactivates or removes a severity rule.
  */
-router.delete('/projects/:projectId/severity-rules/:id', requireProjectAccess, asyncHandler(async (req, res) => {
+router.delete('/projects/:projectId/severity-rules/:id', requireProjectAccess, requireProjectPermission('severityRules.configure'), asyncHandler(async (req, res) => {
   const rule = await EngineeringSeverityRule.findOne({
     _id: req.params.id,
     projectId: req.params.projectId

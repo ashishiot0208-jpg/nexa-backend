@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { Dashboard, DashboardTemplate, DashboardVersion, Device, Instrument, InstrumentCatalog, OrganizationMember, Project, ProjectMember, ProjectTemplate, RuleSet, SensorChannel, Site, UseCaseTemplate, Zone } from '../models/index.js';
-import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
@@ -95,6 +95,7 @@ router.get('/projects', asyncHandler(async (req, res) => {
       templateName: p.templateName,
       plannedConfiguration: p.plannedConfiguration,
       projectRole: req.auth.organizationRole === 'ADMINISTRATOR' ? 'ADMINISTRATOR' : (membershipMap.get(p._id.toString()) || 'VIEWER'),
+      accessMode: p.accessMode || 'ROLE_BASED',
       ...summary
     };
   }));
@@ -253,12 +254,13 @@ router.get('/projects/:projectId', requireProjectAccess, asyncHandler(async (req
     devices: devices.map((d) => ({ id: d._id, name: d.name, deviceId: d.deviceId, deviceType: d.deviceType, transport: d.transport, status: d.status, healthGrade: d.healthGrade, lastSeenAt: d.lastSeenAt })),
     projectRole: req.projectRole,
     currentUserRole: req.projectRole,
+    accessMode: project.accessMode || 'ROLE_BASED',
     _raw: { project, sites, zones }
   };
   res.json(compatible);
 }));
 
-router.get('/projects/:projectId/overview', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/overview', requireProjectAccess, requireProjectPermission('overview.view'), asyncHandler(async (req, res) => {
   const data = await getProjectOverview(req.params.projectId, req.auth?.organizationId);
   if (!data) throw new ApiError(404, 'Project not found');
   res.json(data);

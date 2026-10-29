@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { BaselineVersion, CalibrationVersion, Device, Instrument, InstrumentCatalog, LatestState, SensorChannel, Project, Sensor, SensorDeviceMapping } from '../models/index.js';
-import { requireAuth, requireProjectAccess, ensureProjectAccess } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, ensureProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from '../services/audit.service.js';
@@ -10,7 +10,7 @@ import { getInstrumentOperationalSummary } from '../services/instrument-summary.
 
 const router = Router(); router.use(requireAuth);
 
-router.get('/projects/:projectId/instruments', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/instruments', requireProjectAccess, requireProjectPermission('instruments.view'), asyncHandler(async (req, res) => {
   const { projectId } = req.params;
   const rows = await Instrument.find({ projectId }).sort({ code: 1, name: 1 }).lean();
   
@@ -109,8 +109,8 @@ router.post('/instruments/:id/commission', asyncHandler(async (req, res) => {
   await audit({ req, projectId: instrument.projectId, action: 'INSTRUMENT_COMMISSIONED', resourceType: 'Instrument', resourceId: instrument._id, newState: instrument.toObject(), reason: req.body.comment }); res.json(instrument);
 }));
 
-router.get('/projects/:projectId/devices', requireProjectAccess, asyncHandler(async (req, res) => res.json(await Device.find({ projectId: req.params.projectId }).sort({ name: 1 }).lean())));
-router.post('/projects/:projectId/devices', requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/devices', requireProjectAccess, requireProjectPermission('devices.view'), asyncHandler(async (req, res) => res.json(await Device.find({ projectId: req.params.projectId }).sort({ name: 1 }).lean())));
+router.post('/projects/:projectId/devices', requireProjectAccess, requireProjectPermission('devices.manage'), asyncHandler(async (req, res) => {
   const key = `gxn_${randomToken(16)}`; const doc = await Device.create({ organizationId: req.auth.organizationId, projectId: req.params.projectId, deviceId: req.body.deviceId, name: req.body.name, deviceType: req.body.deviceType || 'LOGGER', transport: req.body.transport || '4G', firmware: req.body.firmware, apiKeyHash: sha256(key), apiKeyPrefix: key.slice(0,10), expectedIntervalSec: req.body.expectedIntervalSec || 900, status: 'PLANNED' });
   await Project.updateOne({ _id: req.params.projectId, setupStatus: 'SETUP_REQUIRED' }, { $set: { setupStatus: 'COMMISSIONING' } });
   await audit({ req, projectId: req.params.projectId, action: 'DEVICE_CREATED', resourceType: 'Device', resourceId: doc._id, newState: doc.toObject() }); res.status(201).json({ device: doc, apiKey: key });

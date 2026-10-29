@@ -2,7 +2,7 @@ import { Router } from 'express';
 import mongoose from 'mongoose';
 import { Device, DerivedReading, LatestState, RawReading } from '../models/index.js';
 import { requireDevice } from '../middleware/device-auth.js';
-import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ingestTelemetry, processTelemetry } from '../services/telemetry.service.js';
 import { decodeCursor, encodeCursor } from '../utils/cursor.js';
@@ -102,7 +102,7 @@ export function resolveTelemetryTimeRange(query) {
   return { from, to };
 }
 
-router.get('/projects/:projectId/telemetry', requireAuth, requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/telemetry', requireAuth, requireProjectAccess, requireProjectPermission('historical.view'), asyncHandler(async (req, res) => {
   const mode = String(req.query.mode || 'processed').toLowerCase();
   const limit = Math.min(Math.max(Number(req.query.limit || 50), 1), 200);
   const page = req.query.page ? Math.max(1, Number(req.query.page)) : null;
@@ -196,7 +196,7 @@ router.get('/projects/:projectId/telemetry', requireAuth, requireProjectAccess, 
   });
 }));
 
-router.get('/projects/:projectId/trends', requireAuth, requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/trends', requireAuth, requireProjectAccess, requireProjectPermission('trends.view'), asyncHandler(async (req, res) => {
   const { from, to } = resolveTelemetryTimeRange(req.query);
   const timeQuery = from ? { $gte: from, $lte: to } : { $lte: to };
   const parameters = String(req.query.parameter || '').split(',').filter(Boolean);
@@ -295,7 +295,7 @@ router.get('/projects/:projectId/trends', requireAuth, requireProjectAccess, asy
   });
 }));
 
-router.get('/projects/:projectId/telemetry/export.csv', requireAuth, requireProjectAccess, asyncHandler(async (req, res) => {
+router.get('/projects/:projectId/telemetry/export.csv', requireAuth, requireProjectAccess, requireProjectPermission('historical.export'), asyncHandler(async (req, res) => {
   const { from, to } = resolveTelemetryTimeRange(req.query);
   const timeQuery = from ? { $gte: from, $lte: to } : { $lte: to };
 

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Report } from '../models/index.js';
-import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import {
   generateProjectSummary,
@@ -34,6 +34,7 @@ router.use(requireAuth);
 router.get(
   '/projects/:projectId/reports/monitoring-summary',
   requireProjectAccess,
+  requireProjectPermission('reports.view'),
   asyncHandler(async (req, res) => {
     const report = await getProjectMonitoringReport({
       projectId: req.params.projectId,
@@ -53,6 +54,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/instrument-trend',
   requireProjectAccess,
+  requireProjectPermission('reports.view'),
   asyncHandler(async (req, res) => {
     const report = await getInstrumentTrendReport({
       projectId: req.params.projectId,
@@ -76,6 +78,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/alarms',
   requireProjectAccess,
+  requireProjectPermission('reports.view'),
   asyncHandler(async (req, res) => {
     const detailed = String(req.query.detailed || '').toLowerCase() === 'true' || req.query.detailed === '1';
     const report = await getAlarmHistoryReport({
@@ -105,6 +108,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/investigations',
   requireProjectAccess,
+  requireProjectPermission('reports.view'),
   asyncHandler(async (req, res) => {
     const report = await getInvestigationSummaryReport({
       projectId: req.params.projectId,
@@ -126,6 +130,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/investigations/pdf',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getInvestigationSummaryReport({
       projectId: req.params.projectId,
@@ -155,6 +160,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/investigations/csv',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getInvestigationSummaryReport({
       projectId: req.params.projectId,
@@ -184,6 +190,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/investigations/:investigationId/pdf',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getInvestigationReport({
       projectId: req.params.projectId,
@@ -205,6 +212,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/investigations/:investigationId',
   requireProjectAccess,
+  requireProjectPermission('reports.view'),
   asyncHandler(async (req, res) => {
     const report = await getInvestigationReport({
       projectId: req.params.projectId,
@@ -222,6 +230,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/infrastructure',
   requireProjectAccess,
+  requireProjectPermission('reports.view'),
   asyncHandler(async (req, res) => {
     const report = await getInfrastructureHealthReport({
       projectId: req.params.projectId,
@@ -238,6 +247,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/severity',
   requireProjectAccess,
+  requireProjectPermission('reports.view'),
   asyncHandler(async (req, res) => {
     const report = await getSeveritySummaryReport({
       projectId: req.params.projectId,
@@ -254,6 +264,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/overall',
   requireProjectAccess,
+  requireProjectPermission('reports.view'),
   asyncHandler(async (req, res) => {
     const includeTrendCharts = req.query.includeTrendCharts !== 'false' && req.query.includeTrendCharts !== '0';
     const includeAlarmDetails = req.query.includeAlarmDetails !== 'false' && req.query.includeAlarmDetails !== '0';
@@ -279,6 +290,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/overall/pdf',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const includeTrendCharts = req.query.includeTrendCharts !== 'false' && req.query.includeTrendCharts !== '0';
     const includeAlarmDetails = req.query.includeAlarmDetails !== 'false' && req.query.includeAlarmDetails !== '0';
@@ -311,6 +323,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/overall/csv',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const includeTrendCharts = req.query.includeTrendCharts !== 'false' && req.query.includeTrendCharts !== '0';
     const includeAlarmDetails = req.query.includeAlarmDetails !== 'false' && req.query.includeAlarmDetails !== '0';
@@ -372,6 +385,7 @@ async function sendExportResponse(res, { reportType, format, reportData, baseFil
 router.get(
   '/projects/:projectId/reports/monitoring-summary/pdf',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getProjectMonitoringReport({
       projectId: req.params.projectId,
@@ -395,6 +409,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/monitoring-summary/csv',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getProjectMonitoringReport({
       projectId: req.params.projectId,
@@ -421,6 +436,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/instrument-trend/pdf',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getInstrumentTrendReport({
       projectId: req.params.projectId,
@@ -450,6 +466,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/instrument-trend/csv',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getInstrumentTrendReport({
       projectId: req.params.projectId,
@@ -482,6 +499,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/alarms/pdf',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const detailed = String(req.query.detailed || '').toLowerCase() === 'true' || req.query.detailed === '1';
     const report = await getAlarmHistoryReport({
@@ -514,6 +532,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/alarms/csv',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const detailed = String(req.query.detailed || '').toLowerCase() === 'true' || req.query.detailed === '1';
     const report = await getAlarmHistoryReport({
@@ -549,6 +568,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/infrastructure/pdf',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getInfrastructureHealthReport({
       projectId: req.params.projectId,
@@ -569,6 +589,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/infrastructure/csv',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getInfrastructureHealthReport({
       projectId: req.params.projectId,
@@ -592,6 +613,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/severity/pdf',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getSeveritySummaryReport({
       projectId: req.params.projectId,
@@ -612,6 +634,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/severity/csv',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const report = await getSeveritySummaryReport({
       projectId: req.params.projectId,
@@ -635,6 +658,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports/export',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const type = String(req.query.type || req.query.reportType || '').trim().toLowerCase();
     const format = String(req.query.format || 'pdf').trim().toLowerCase();
@@ -843,6 +867,7 @@ router.get(
 router.get(
   '/projects/:projectId/reports',
   requireProjectAccess,
+  requireProjectPermission('reports.view'),
   asyncHandler(async (req, res) => {
     const reports = await Report.find({
       projectId: req.params.projectId,
@@ -855,6 +880,7 @@ router.get(
 router.post(
   '/projects/:projectId/reports',
   requireProjectAccess,
+  requireProjectPermission('reports.export'),
   asyncHandler(async (req, res) => {
     const r = await Report.create({
       organizationId: req.auth.organizationId,

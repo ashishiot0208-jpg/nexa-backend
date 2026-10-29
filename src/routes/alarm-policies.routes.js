@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth, requireProjectAccess } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
 import {
@@ -20,6 +20,7 @@ router.use(requireAuth);
 router.get(
   '/projects/:projectId/alarm-policies',
   requireProjectAccess,
+  requireProjectPermission('alarmPolicies.view'),
   asyncHandler(async (req, res) => {
     const { status, category, scope } = req.query;
     const policies = await listAlarmPolicies({
@@ -39,6 +40,7 @@ router.get(
 router.get(
   '/projects/:projectId/alarm-policies/:id',
   requireProjectAccess,
+  requireProjectPermission('alarmPolicies.view'),
   asyncHandler(async (req, res) => {
     const policy = await getAlarmPolicy({
       policyId: req.params.id,
@@ -55,6 +57,7 @@ router.get(
 router.post(
   '/projects/:projectId/alarm-policies',
   requireProjectAccess,
+  requireProjectPermission('alarmPolicies.configure'),
   asyncHandler(async (req, res) => {
     if (req.projectRole === 'VIEWER') {
       throw new ApiError(403, 'Viewer permission is read-only. Cannot create alarm policies.');
@@ -98,6 +101,7 @@ router.post(
 router.put(
   '/projects/:projectId/alarm-policies/:id',
   requireProjectAccess,
+  requireProjectPermission('alarmPolicies.configure'),
   asyncHandler(async (req, res) => {
     if (req.projectRole === 'VIEWER') {
       throw new ApiError(403, 'Viewer permission is read-only. Cannot update alarm policies.');
@@ -122,6 +126,7 @@ router.put(
 router.patch(
   '/projects/:projectId/alarm-policies/:id/status',
   requireProjectAccess,
+  requireProjectPermission('alarmPolicies.activate'),
   asyncHandler(async (req, res) => {
     if (req.projectRole === 'VIEWER') {
       throw new ApiError(403, 'Viewer permission is read-only. Cannot modify alarm policies.');

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { Alarm, AlarmEvent } from '../models/index.js';
-import { requireAuth, requireProjectAccess, ensureProjectAccess } from '../middleware/auth.js';
+import { requireAuth, requireProjectAccess, ensureProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import {
   transitionAlarm,
@@ -25,6 +25,7 @@ router.use(requireAuth);
 router.get(
   '/projects/:projectId/alarms',
   requireProjectAccess,
+  requireProjectPermission('alarms.view'),
   asyncHandler(async (req, res) => {
     const { status, category, instrumentId, severity, lifecycleVersion, includeLegacy, limit, skip } = req.query;
 
@@ -52,6 +53,7 @@ router.get(
 router.get(
   '/projects/:projectId/alarms/:alarmId',
   requireProjectAccess,
+  requireProjectPermission('alarms.view'),
   asyncHandler(async (req, res) => {
     const result = await getAlarm({
       alarmId: req.params.alarmId,
@@ -87,8 +89,18 @@ const handleAcknowledge = asyncHandler(async (req, res) => {
   res.json(updated);
 });
 
-router.post('/projects/:projectId/alarms/:alarmId/acknowledge', requireProjectAccess, handleAcknowledge);
-router.patch('/projects/:projectId/alarms/:alarmId/acknowledge', requireProjectAccess, handleAcknowledge);
+router.post(
+  '/projects/:projectId/alarms/:alarmId/acknowledge',
+  requireProjectAccess,
+  requireProjectPermission('alarms.acknowledge'),
+  handleAcknowledge
+);
+router.patch(
+  '/projects/:projectId/alarms/:alarmId/acknowledge',
+  requireProjectAccess,
+  requireProjectPermission('alarms.acknowledge'),
+  handleAcknowledge
+);
 
 /**
  * POST /api/v1/projects/:projectId/alarms/:alarmId/resolve
@@ -115,8 +127,18 @@ const handleResolve = asyncHandler(async (req, res) => {
   res.json(updated);
 });
 
-router.post('/projects/:projectId/alarms/:alarmId/resolve', requireProjectAccess, handleResolve);
-router.patch('/projects/:projectId/alarms/:alarmId/resolve', requireProjectAccess, handleResolve);
+router.post(
+  '/projects/:projectId/alarms/:alarmId/resolve',
+  requireProjectAccess,
+  requireProjectPermission('alarms.resolve'),
+  handleResolve
+);
+router.patch(
+  '/projects/:projectId/alarms/:alarmId/resolve',
+  requireProjectAccess,
+  requireProjectPermission('alarms.resolve'),
+  handleResolve
+);
 
 // =========================================================================
 // LEGACY ALARM ENDPOINTS (Preserved for backward compatibility)

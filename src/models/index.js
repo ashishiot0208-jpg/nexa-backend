@@ -18,3 +18,4 @@ export * from './commissioning.js';
 export * from './engineering-rule.js';
 export * from './alarm-policy.js';
 export * from './investigation.js';
+export * from './workforce.js';

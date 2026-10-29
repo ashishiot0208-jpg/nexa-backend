@@ -47,6 +47,7 @@ const projectSchema = new Schema({
   correlations: { type: [String], default: [] },
   coordinateSystem: String,
   tarpVersion: String,
+  accessMode: { type: String, enum: ['ROLE_BASED', 'TEAM_PERMISSIONS'], default: 'ROLE_BASED', index: true },
   metadata: { type: Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
 projectSchema.index({ organizationId: 1, code: 1 }, { unique: true });
