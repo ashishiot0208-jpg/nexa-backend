@@ -27,15 +27,32 @@ router.get('/me', requireAuth, asyncHandler(async (req, res) => res.json(req.aut
 const setupPasswordSchema = z.object({ token: z.string(), password: z.string().min(6) });
 router.post('/setup-password', validate(setupPasswordSchema), asyncHandler(async (req, res) => {
   const user = await User.findOne({ setupToken: req.body.token, status: 'INVITED' });
-  if (!user || (user.setupTokenExpires && user.setupTokenExpires < new Date())) {
-    throw new ApiError(400, 'Invalid or expired setup token');
+  if (user) {
+    if (user.setupTokenExpires && user.setupTokenExpires < new Date()) {
+      throw new ApiError(400, 'Invalid or expired setup token');
+    }
+    user.passwordHash = await bcrypt.hash(req.body.password, 12);
+    user.status = 'ACTIVE';
+    user.setupToken = undefined;
+    user.setupTokenExpires = undefined;
+    await user.save();
+    return res.json({ message: 'Password setup successfully' });
   }
-  user.passwordHash = await bcrypt.hash(req.body.password, 12);
-  user.status = 'ACTIVE';
-  user.setupToken = undefined;
-  user.setupTokenExpires = undefined;
-  await user.save();
-  res.json({ message: 'Password setup successfully' });
+
+  // Fallback to EmployeeInvitation token
+  const { EmployeeInvitation } = await import('../models/index.js');
+  const { hashInvitationToken, acceptEmployeeInvitation } = await import('../services/employee-invitation.service.js');
+  const tokenHash = hashInvitationToken(req.body.token);
+  const invitation = await EmployeeInvitation.findOne({ tokenHash });
+  if (invitation) {
+    const result = await acceptEmployeeInvitation({
+      rawToken: req.body.token,
+      password: req.body.password
+    });
+    return res.json({ message: result.message || 'Password setup successfully' });
+  }
+
+  throw new ApiError(400, 'Invalid or expired setup token');
 }));
 
 export default router;

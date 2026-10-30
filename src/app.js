@@ -74,6 +74,7 @@ export function createApp() {
   app.use('/api/v1/admin/gateway-types', platformAdminGatewayTypesRoutes);
   app.use('/api/v1/admin/project-templates', platformAdminProjectTemplatesRoutes);
   app.use('/api/v1/admin/audit', platformAdminAuditRoutes);
+  app.use('/api/v1', workforceRoutes);
   app.use('/api/v1', templateRoutes);
   app.use('/api/v1', projectRoutes);
   app.use('/api/v1', assetRoutes);
@@ -93,7 +94,6 @@ export function createApp() {
   app.use('/api/v1', severityRulesRoutes);
   app.use('/api/v1', alarmPolicyRoutes);
   app.use('/api/v1', investigationRoutes);
-  app.use('/api/v1', workforceRoutes);
   app.get('/api/v1/notifications', requireAuth, asyncHandler(async (req, res) => {
     const rows = await Notification.find({ organizationId: req.auth.organizationId, recipient: req.auth.email }).sort({ createdAt: -1 }).limit(100).lean();
     res.json(rows);

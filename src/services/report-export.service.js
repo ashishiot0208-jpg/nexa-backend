@@ -1439,7 +1439,7 @@ export function generateReportPdf(reportType, report) {
           doc.font('Helvetica-Oblique').fontSize(8.5).fillColor(PALETTE.muted)
             .text('No investigations were recorded during the selected reporting period.');
         } else {
-          const invHeaders = ['INVESTIGATION', 'SOURCE ALARM', 'ASSET', 'ASSIGNED TO', 'PRIORITY', 'STATUS', 'STARTED', 'COMPLETED'];
+          const invHeaders = ['INVESTIGATION', 'SOURCE ALARM', 'ASSET', 'ASSIGNMENT', 'PRIORITY', 'STATUS', 'STARTED', 'COMPLETED'];
           const invWidths = [100, 85, 85, 110, 60, 70, 120, 120]; // Sum = 750 pt
           const invRows = invList.map(inv => {
             const rawInvCode = inv.code || inv.investigationCode || String(inv._id);
@@ -1460,11 +1460,23 @@ export function generateReportPdf(reportType, report) {
               inv.instrumentId?.code ||
               '—';
 
+            const teamName = inv.assignedTeam?.name || inv.assignedTeamSnapshot?.teamName || '';
+            const personName = inv.assignedTo?.displayName || inv.assignedTo?.name || inv.assignedUserSnapshot?.displayName || '';
+
+            let assignmentLabel = '—';
+            if (teamName && personName) {
+              assignmentLabel = `${teamName}\n${personName}`;
+            } else if (teamName) {
+              assignmentLabel = `${teamName}\n(Unassigned)`;
+            } else if (personName) {
+              assignmentLabel = personName;
+            }
+
             return [
               invCode,
               srcAlarm,
               invAssetCode,
-              inv.assignedTo?.displayName || inv.assignedTo?.name || inv.assignedTo?.email || '—',
+              assignmentLabel,
               inv.priority || 'MEDIUM',
               normalizeLabel(inv.status),
               formatPdfDateTime(inv.createdAt || inv.startedAt, tz),

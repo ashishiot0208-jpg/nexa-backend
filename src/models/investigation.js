@@ -9,6 +9,8 @@ export const CANONICAL_INVESTIGATION_NOTE_TYPES = ['FINDING', 'NOTE', 'OBSERVATI
 export const CANONICAL_INVESTIGATION_EVENT_TYPES = [
   'CREATED',
   'ASSIGNED',
+  'REASSIGNED',
+  'UNASSIGNED',
   'STARTED',
   'FINDING_ADDED',
   'COMPLETED',
@@ -25,6 +27,19 @@ const alarmSnapshotSchema = new Schema({
   parameterCode: String,
   triggeredAt: Date,
   status: String
+}, { _id: false });
+
+const assignedTeamSnapshotSchema = new Schema({
+  teamId: { type: Schema.Types.ObjectId, ref: 'Team' },
+  teamCode: String,
+  teamName: String
+}, { _id: false });
+
+const assignedUserSnapshotSchema = new Schema({
+  userId: { type: Schema.Types.ObjectId, ref: 'User' },
+  displayName: String,
+  employeeCode: String,
+  designation: String
 }, { _id: false });
 
 const investigationSchema = new Schema({
@@ -61,8 +76,11 @@ const investigationSchema = new Schema({
     default: 'MEDIUM'
   },
 
-  // Assignment
+  // Assignment (Phase A1E: Team + Individual)
+  assignedTeamId: { type: Schema.Types.ObjectId, ref: 'Team', index: true },
+  assignedTeamSnapshot: { type: assignedTeamSnapshotSchema },
   assignedTo: { type: Schema.Types.ObjectId, ref: 'User', index: true },
+  assignedUserSnapshot: { type: assignedUserSnapshotSchema },
   assignedAt: Date,
 
   // Investigation Lifecycle Execution
@@ -88,6 +106,7 @@ investigationSchema.index({ projectId: 1, status: 1 });
 investigationSchema.index({ projectId: 1, alarmId: 1 });
 investigationSchema.index({ projectId: 1, instrumentId: 1 });
 investigationSchema.index({ projectId: 1, assignedTo: 1 });
+investigationSchema.index({ projectId: 1, assignedTeamId: 1 });
 
 investigationSchema.pre('save', async function (next) {
   if (this.isNew && !this.investigationCode) {

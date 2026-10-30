@@ -9,7 +9,8 @@ import {
   addFinding,
   completeInvestigation,
   getInvestigation,
-  listInvestigations
+  listInvestigations,
+  getInvestigationAssignmentOptions
 } from '../services/investigation.service.js';
 
 const router = Router();
@@ -25,7 +26,7 @@ function assertMutationAllowed(req) {
 }
 
 // =========================================================================
-// CANONICAL PROJECT-SCOPED INVESTIGATION ENDPOINTS (Phase C7A)
+// CANONICAL PROJECT-SCOPED INVESTIGATION ENDPOINTS (Phase C7A / A1E)
 // =========================================================================
 
 /**
@@ -44,6 +45,7 @@ router.get(
       deviceId,
       gatewayId,
       assignedTo,
+      assignedTeamId,
       priority,
       limit,
       skip
@@ -58,12 +60,32 @@ router.get(
       deviceId,
       gatewayId,
       assignedTo,
+      assignedTeamId,
       priority,
       limit,
       skip
     });
 
     res.json(investigations);
+  })
+);
+
+/**
+ * GET /api/v1/projects/:projectId/investigations/assignment-options
+ * Get eligible teams and members for assignment (Phase A1E).
+ */
+router.get(
+  '/projects/:projectId/investigations/assignment-options',
+  requireProjectAccess,
+  requireProjectPermission('investigations.view'),
+  asyncHandler(async (req, res) => {
+    const options = await getInvestigationAssignmentOptions({
+      projectId: req.params.projectId,
+      organizationId: req.auth.organizationId,
+      teamId: req.query.teamId
+    });
+
+    res.json(options);
   })
 );
 
@@ -117,6 +139,7 @@ router.post(
       category,
       source,
       priority,
+      assignedTeamId,
       assignedTo,
       comment
     } = req.body;
@@ -134,6 +157,7 @@ router.post(
       category,
       source,
       priority,
+      assignedTeamId,
       assignedTo,
       actor: {
         actorType: 'USER',
@@ -151,19 +175,21 @@ router.post(
 
 /**
  * POST & PATCH /api/v1/projects/:projectId/investigations/:id/assign
- * Assign investigation to project user.
+ * Assign investigation to team and/or project user.
  */
 const handleAssign = asyncHandler(async (req, res) => {
   assertMutationAllowed(req);
 
   const investigationId = req.params.investigationId || req.params.id;
-  const { assignedTo, comment } = req.body;
+  const { assignedTeamId, assignedTo, assignedToUserId, comment } = req.body;
 
   const updated = await assignInvestigation({
     investigationId,
     projectId: req.params.projectId,
     organizationId: req.auth.organizationId,
+    assignedTeamId,
     assignedTo,
+    assignedToUserId,
     actor: {
       actorType: 'USER',
       userId: req.auth.userId,

@@ -816,7 +816,8 @@ export async function getInvestigationReport({
     .populate('instrumentId', 'code name catalogCode coordinates depthM')
     .populate('deviceId', 'deviceId name')
     .populate('gatewayId', 'gatewayId name')
-    .populate('assignedTo', 'displayName email')
+    .populate('assignedTeamId', 'teamCode name status')
+    .populate('assignedTo', 'displayName email status')
     .populate('createdBy', 'displayName email')
     .populate('startedBy', 'displayName email')
     .populate('completedBy', 'displayName email')
@@ -872,12 +873,41 @@ export async function getInvestigationReport({
     parameter: investigation.parameterCode || sourceAlarm.parameter || null
   };
 
+  const assignedTeamName = investigation.assignedTeamId?.name ||
+    investigation.assignedTeamSnapshot?.teamName ||
+    null;
+  const assignedTeamCode = investigation.assignedTeamId?.teamCode ||
+    investigation.assignedTeamSnapshot?.teamCode ||
+    null;
+
+  const assignedPersonName = investigation.assignedUserSnapshot?.displayName ||
+    investigation.assignedTo?.displayName ||
+    null;
+  const assignedPersonCode = investigation.assignedUserSnapshot?.employeeCode || null;
+  const assignedPersonDesignation = investigation.assignedUserSnapshot?.designation || null;
+
+  const assignedTeam = assignedTeamName ? {
+    id: investigation.assignedTeamId?._id || investigation.assignedTeamSnapshot?.teamId || null,
+    teamCode: assignedTeamCode,
+    name: assignedTeamName,
+    teamName: assignedTeamName,
+    status: investigation.assignedTeamId?.status || 'ACTIVE'
+  } : null;
+
+  const assignedPerson = assignedPersonName ? {
+    id: investigation.assignedTo?._id || investigation.assignedUserSnapshot?.userId || null,
+    displayName: assignedPersonName,
+    name: assignedPersonName,
+    email: investigation.assignedTo?.email || '',
+    employeeCode: assignedPersonCode,
+    designation: assignedPersonDesignation,
+    status: investigation.assignedTo?.status || 'ACTIVE'
+  } : null;
+
   const assignment = {
-    assignedPerson: investigation.assignedTo ? {
-      id: investigation.assignedTo._id,
-      displayName: investigation.assignedTo.displayName,
-      email: investigation.assignedTo.email
-    } : null,
+    assignedTeam,
+    assignedPerson,
+    assignedTo: assignedPerson,
     assignedAt: investigation.assignedAt || null
   };
 
@@ -921,6 +951,8 @@ export async function getInvestigationReport({
 
   return {
     ...meta,
+    assignedTeam,
+    assignedPerson,
     data: {
       investigation: {
         id: investigation._id,
@@ -965,13 +997,9 @@ export async function getInvestigationReport({
       sourceAlarm,
       asset,
       assignment: {
-        assignedTo: investigation.assignedTo ? {
-          id: investigation.assignedTo._id,
-          name: investigation.assignedTo.displayName,
-          displayName: investigation.assignedTo.displayName,
-          email: investigation.assignedTo.email
-        } : null,
-        assignedPerson: assignment.assignedPerson,
+        assignedTeam,
+        assignedTo: assignedPerson,
+        assignedPerson,
         assignedAt: investigation.assignedAt || null
       },
       description: investigation.description || '',
@@ -1049,7 +1077,8 @@ export async function getInvestigationSummaryReport({
       .skip(skip)
       .limit(parsedLimit)
       .populate('instrumentId', 'code name')
-      .populate('assignedTo', 'displayName email')
+      .populate('assignedTeamId', 'teamCode name status')
+      .populate('assignedTo', 'displayName email status')
       .populate('alarmId', 'title currentSeverity highestSeverity status')
       .lean()
   ]);
@@ -1061,58 +1090,76 @@ export async function getInvestigationSummaryReport({
     completed: compCount
   };
 
-  const formatted = items.map(inv => ({
-    id: inv._id,
-    code: inv.investigationCode,
-    investigationCode: inv.investigationCode,
-    title: inv.title,
-    status: inv.status,
-    priority: inv.priority,
-    category: inv.category || 'ENGINEERING_SEVERITY',
-    parameter: inv.parameterCode || null,
-    sourceAlarm: inv.alarmId ? {
-      id: inv.alarmId._id,
-      code: inv.alarmId.code || inv.alarmId.title,
-      title: inv.alarmId.title
-    } : (inv.alarmSnapshot ? {
-      id: inv.alarmSnapshot.alarmId || inv.alarmId,
-      code: inv.alarmSnapshot.code || (inv.alarmSnapshot.alarmId ? `ALM-${String(inv.alarmSnapshot.alarmId).slice(-6).toUpperCase()}` : inv.alarmSnapshot.title),
-      title: inv.alarmSnapshot.title
-    } : (inv.alarmId ? { id: inv.alarmId, code: `ALM-${String(inv.alarmId).slice(-6).toUpperCase()}` } : null)),
-    alarmSnapshot: inv.alarmSnapshot || null,
-    linkedAlarm: inv.alarmId ? {
-      id: inv.alarmId._id,
-      title: inv.alarmId.title,
-      currentSeverity: inv.alarmId.currentSeverity,
-      status: inv.alarmId.status
-    } : null,
-    asset: {
+  const formatted = items.map(inv => {
+    const teamName = inv.assignedTeamId?.name || inv.assignedTeamSnapshot?.teamName || null;
+    const teamCode = inv.assignedTeamId?.teamCode || inv.assignedTeamSnapshot?.teamCode || null;
+    const personName = inv.assignedUserSnapshot?.displayName || inv.assignedTo?.displayName || null;
+
+    return {
+      id: inv._id,
+      code: inv.investigationCode,
+      investigationCode: inv.investigationCode,
+      title: inv.title,
+      status: inv.status,
+      priority: inv.priority,
+      category: inv.category || 'ENGINEERING_SEVERITY',
+      parameter: inv.parameterCode || null,
+      sourceAlarm: inv.alarmId ? {
+        id: inv.alarmId._id,
+        code: inv.alarmId.code || inv.alarmId.title,
+        title: inv.alarmId.title
+      } : (inv.alarmSnapshot ? {
+        id: inv.alarmSnapshot.alarmId || inv.alarmId,
+        code: inv.alarmSnapshot.code || (inv.alarmSnapshot.alarmId ? `ALM-${String(inv.alarmSnapshot.alarmId).slice(-6).toUpperCase()}` : inv.alarmSnapshot.title),
+        title: inv.alarmSnapshot.title
+      } : (inv.alarmId ? { id: inv.alarmId, code: `ALM-${String(inv.alarmId).slice(-6).toUpperCase()}` } : null)),
+      alarmSnapshot: inv.alarmSnapshot || null,
+      linkedAlarm: inv.alarmId ? {
+        id: inv.alarmId._id,
+        title: inv.alarmId.title,
+        currentSeverity: inv.alarmId.currentSeverity,
+        status: inv.alarmId.status
+      } : null,
+      asset: {
+        instrument: inv.instrumentId ? {
+          id: inv.instrumentId._id,
+          code: inv.instrumentId.code,
+          name: inv.instrumentId.name
+        } : null,
+        parameter: inv.parameterCode || null
+      },
       instrument: inv.instrumentId ? {
         id: inv.instrumentId._id,
         code: inv.instrumentId.code,
         name: inv.instrumentId.name
       } : null,
-      parameter: inv.parameterCode || null
-    },
-    instrument: inv.instrumentId ? {
-      id: inv.instrumentId._id,
-      code: inv.instrumentId.code,
-      name: inv.instrumentId.name
-    } : null,
-    assignedTo: inv.assignedTo ? {
-      id: inv.assignedTo._id,
-      name: inv.assignedTo.displayName,
-      displayName: inv.assignedTo.displayName,
-      email: inv.assignedTo.email
-    } : null,
-    finalOutcome: {
-      conclusion: inv.conclusion || null
-    },
-    conclusion: inv.conclusion || null,
-    createdAt: inv.createdAt,
-    startedAt: inv.startedAt || null,
-    completedAt: inv.completedAt || null
-  }));
+      assignedTeam: teamName ? {
+        id: inv.assignedTeamId?._id || inv.assignedTeamSnapshot?.teamId || null,
+        teamCode,
+        name: teamName,
+        teamName,
+        status: inv.assignedTeamId?.status || 'ACTIVE'
+      } : null,
+      assignedTeamSnapshot: inv.assignedTeamSnapshot || null,
+      assignedUserSnapshot: inv.assignedUserSnapshot || null,
+      assignedTo: personName ? {
+        id: inv.assignedTo?._id || inv.assignedUserSnapshot?.userId || null,
+        name: personName,
+        displayName: personName,
+        email: inv.assignedTo?.email || '',
+        employeeCode: inv.assignedUserSnapshot?.employeeCode || null,
+        designation: inv.assignedUserSnapshot?.designation || null,
+        status: inv.assignedTo?.status || 'ACTIVE'
+      } : null,
+      finalOutcome: {
+        conclusion: inv.conclusion || null
+      },
+      conclusion: inv.conclusion || null,
+      createdAt: inv.createdAt,
+      startedAt: inv.startedAt || null,
+      completedAt: inv.completedAt || null
+    };
+  });
 
   const meta = buildReportMetadata({
     reportType: 'INVESTIGATION_SUMMARY_REPORT',

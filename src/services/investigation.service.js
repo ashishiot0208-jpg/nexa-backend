@@ -6,13 +6,140 @@ import {
   Alarm,
   ProjectMember,
   OrganizationMember,
-  User
+  User,
+  Team,
+  TeamMember,
+  ProjectTeamAccess,
+  EmployeeProfile
 } from '../models/index.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from './audit.service.js';
 
 /**
- * Validate that an assignee has access to the target project.
+ * Validate that a Team is eligible for assignment on a project.
+ * - Team.organizationId must match project organization (no foreign-org)
+ * - Team.status === 'ACTIVE' (no inactive teams)
+ * - Team must have ACTIVE ProjectTeamAccess for the project
+ * - Team must have investigations.view permission if permissions are defined
+ */
+export async function validateTeamAssignment({ organizationId, projectId, teamId }) {
+  if (!teamId) return null;
+  if (!mongoose.Types.ObjectId.isValid(teamId)) {
+    throw new ApiError(400, 'Invalid team ID format');
+  }
+
+  const team = await Team.findById(teamId).lean();
+  if (!team) {
+    throw new ApiError(404, 'Team not found');
+  }
+
+  if (team.organizationId.toString() !== organizationId.toString()) {
+    throw new ApiError(403, 'Team does not belong to the project organization');
+  }
+
+  if (team.status !== 'ACTIVE') {
+    throw new ApiError(400, 'Cannot assign an inactive team to an investigation');
+  }
+
+  const teamAccess = await ProjectTeamAccess.findOne({
+    organizationId,
+    projectId,
+    teamId: team._id,
+    status: 'ACTIVE'
+  }).lean();
+
+  if (!teamAccess) {
+    throw new ApiError(400, 'Selected team does not have active access to this project');
+  }
+
+  if (Array.isArray(teamAccess.permissions) && teamAccess.permissions.length > 0) {
+    if (!teamAccess.permissions.includes('investigations.view')) {
+      throw new ApiError(400, 'Selected team does not have investigation permissions for this project');
+    }
+  }
+
+  return { team, teamAccess };
+}
+
+/**
+ * Validate that an individual assignee is eligible.
+ * When assignedTeamId is provided:
+ * - Active OrganizationMember
+ * - Active ProjectMember
+ * - Active TeamMember of the selected team
+ * - Team.status === 'ACTIVE'
+ */
+export async function validateAssigneeForTeam({ organizationId, projectId, teamId, userId }) {
+  if (!userId) return null;
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    throw new ApiError(400, 'Invalid user ID format');
+  }
+
+  const [user, orgMember, projectMember, employeeProfile] = await Promise.all([
+    User.findById(userId).lean(),
+    OrganizationMember.findOne({ organizationId, userId, status: 'ACTIVE' }).lean(),
+    ProjectMember.findOne({ projectId, userId, status: 'ACTIVE' }).lean(),
+    EmployeeProfile.findOne({ organizationId, userId, status: 'ACTIVE' }).lean()
+  ]);
+
+  if (!user || user.status === 'DEACTIVATED' || user.status === 'SUSPENDED') {
+    throw new ApiError(400, 'Assigned user is not an active user');
+  }
+
+  if (!orgMember && user.status !== 'ACTIVE') {
+    throw new ApiError(400, 'Assigned user is not an active organization member');
+  }
+
+  if (!projectMember && orgMember?.organizationRole !== 'ADMINISTRATOR') {
+    throw new ApiError(400, 'Assigned user is not an active member of this project');
+  }
+
+  let teamMembership = null;
+  if (teamId) {
+    teamMembership = await TeamMember.findOne({
+      organizationId,
+      teamId,
+      userId,
+      status: 'ACTIVE'
+    }).lean();
+
+    if (!teamMembership) {
+      throw new ApiError(400, 'Assigned user is not an active member of the selected team');
+    }
+  }
+
+  return {
+    user,
+    employeeProfile,
+    projectMember,
+    teamMember: teamMembership
+  };
+}
+
+/**
+ * Helper to construct assignment snapshots.
+ */
+export function buildTeamSnapshot(team) {
+  if (!team) return null;
+  return {
+    teamId: team._id,
+    teamCode: team.teamCode,
+    teamName: team.name
+  };
+}
+
+export function buildUserSnapshot(user, employeeProfile) {
+  if (!user) return null;
+  return {
+    userId: user._id,
+    displayName: employeeProfile?.displayName || user.displayName,
+    employeeCode: employeeProfile?.employeeCode || null,
+    designation: employeeProfile?.designation || null
+  };
+}
+
+/**
+ * Validate that an assignee has access to the target project (legacy helper).
  */
 async function validateProjectUserAccess({ projectId, organizationId, userId }) {
   if (!userId) return null;
@@ -60,6 +187,7 @@ export async function createInvestigation({
   category,
   source,
   priority = 'MEDIUM',
+  assignedTeamId,
   assignedTo,
   actor,
   comment,
@@ -117,9 +245,26 @@ export async function createInvestigation({
     source = source || linkedAlarm.source || 'ALARM';
   }
 
-  // Validate assignee if provided at creation
+  let assignedTeamSnapshot = null;
+  let assignedUserSnapshot = null;
+  let validatedTeam = null;
+  let validatedUser = null;
+
+  if (assignedTeamId) {
+    const { team } = await validateTeamAssignment({ organizationId, projectId, teamId: assignedTeamId });
+    validatedTeam = team;
+    assignedTeamSnapshot = buildTeamSnapshot(team);
+  }
+
   if (assignedTo) {
-    await validateProjectUserAccess({ projectId, organizationId, userId: assignedTo });
+    const { user, employeeProfile } = await validateAssigneeForTeam({
+      organizationId,
+      projectId,
+      teamId: assignedTeamId,
+      userId: assignedTo
+    });
+    validatedUser = user;
+    assignedUserSnapshot = buildUserSnapshot(user, employeeProfile);
   }
 
   const investigation = await Investigation.create({
@@ -137,8 +282,11 @@ export async function createInvestigation({
     category: category || undefined,
     source: source || 'MANUAL',
     priority: priority || 'MEDIUM',
-    assignedTo: assignedTo || undefined,
-    assignedAt: assignedTo ? new Date() : undefined,
+    assignedTeamId: validatedTeam ? validatedTeam._id : undefined,
+    assignedTeamSnapshot: assignedTeamSnapshot || undefined,
+    assignedTo: validatedUser ? validatedUser._id : undefined,
+    assignedUserSnapshot: assignedUserSnapshot || undefined,
+    assignedAt: (validatedTeam || validatedUser) ? new Date() : undefined,
     createdBy: actor?.userId || actor?.actorId,
     lifecycleVersion: 1
   });
@@ -159,11 +307,21 @@ export async function createInvestigation({
       alarmId: linkedAlarm?._id,
       title: investigation.title,
       priority: investigation.priority,
+      assignedTeamId: investigation.assignedTeamId,
       assignedTo: investigation.assignedTo
     }
   });
 
-  if (assignedTo) {
+  if (validatedTeam || validatedUser) {
+    let assignComment = 'Assigned upon creation';
+    if (validatedTeam && validatedUser) {
+      assignComment += ` to ${validatedTeam.name} · ${assignedUserSnapshot?.displayName || validatedUser.displayName}`;
+    } else if (validatedTeam) {
+      assignComment += ` to team ${validatedTeam.name}`;
+    } else if (validatedUser) {
+      assignComment += ` to user ${assignedUserSnapshot?.displayName || validatedUser.displayName}`;
+    }
+
     await InvestigationEvent.create({
       investigationId: investigation._id,
       projectId,
@@ -174,8 +332,13 @@ export async function createInvestigation({
       eventType: 'ASSIGNED',
       previousStatus: 'OPEN',
       newStatus: 'OPEN',
-      comment: `Assigned upon creation to user ${assignedTo}`,
-      metadata: { assignedTo }
+      comment: assignComment,
+      metadata: {
+        newTeam: assignedTeamSnapshot,
+        newAssignee: assignedUserSnapshot,
+        assignedTeamId: investigation.assignedTeamId,
+        assignedTo: investigation.assignedTo
+      }
     });
   }
 
@@ -190,13 +353,17 @@ export async function createInvestigation({
 }
 
 /**
- * Assign an investigation to a validated project user.
+ * Assign or reassign an investigation to a team and/or individual project member.
+ * Phase A1E: Supports Team-only, Team + Individual, and legacy Individual-only.
+ * Enforces that if a team is assigned, individual assignee must be an active member of that team.
  */
 export async function assignInvestigation({
   investigationId,
   projectId,
   organizationId,
+  assignedTeamId,
   assignedTo,
+  assignedToUserId,
   actor,
   comment
 }) {
@@ -210,18 +377,140 @@ export async function assignInvestigation({
     throw new ApiError(409, 'Cannot assign an already completed investigation');
   }
 
-  if (!assignedTo) {
-    throw new ApiError(400, 'assignedTo user ID is required');
+  // Normalize inputs: assignedToUserId is alias for assignedTo
+  const targetUserId = assignedTo !== undefined ? assignedTo : assignedToUserId;
+  const targetTeamId = assignedTeamId;
+
+  // Track previous state for event metadata
+  const prevTeamId = investigation.assignedTeamId;
+  const prevTeamSnapshot = investigation.assignedTeamSnapshot;
+  const prevUserId = investigation.assignedTo;
+  const prevUserSnapshot = investigation.assignedUserSnapshot;
+  const prevStatus = investigation.status;
+
+  // Case 1: Unassign completely (both team and user are explicitly null or empty string)
+  const isTeamExplicitlyCleared = targetTeamId === null || targetTeamId === '';
+  const isUserExplicitlyCleared = targetUserId === null || targetUserId === '';
+
+  if (isTeamExplicitlyCleared && (isUserExplicitlyCleared || targetUserId === undefined)) {
+    investigation.assignedTeamId = null;
+    investigation.assignedTeamSnapshot = null;
+    investigation.assignedTo = null;
+    investigation.assignedUserSnapshot = null;
+    investigation.assignedAt = null;
+    investigation.updatedBy = actor?.userId || actor?.actorId;
+    await investigation.save();
+
+    await InvestigationEvent.create({
+      investigationId: investigation._id,
+      projectId,
+      actorType: actor?.actorType || 'USER',
+      actorId: actor?.userId || actor?.actorId,
+      actorEmail: actor?.email,
+      actorDisplayName: actor?.displayName,
+      eventType: 'UNASSIGNED',
+      previousStatus: prevStatus,
+      newStatus: prevStatus,
+      comment: comment || 'Unassigned investigation',
+      metadata: {
+        previousTeam: prevTeamSnapshot || (prevTeamId ? { teamId: prevTeamId } : null),
+        newTeam: null,
+        previousAssignee: prevUserSnapshot || (prevUserId ? { userId: prevUserId } : null),
+        newAssignee: null,
+        changedBy: actor?.displayName || actor?.email || actor?.userId,
+        changedAt: new Date()
+      }
+    });
+
+    return investigation;
   }
 
-  await validateProjectUserAccess({ projectId, organizationId, userId: assignedTo });
-  const assignee = await User.findById(assignedTo).lean();
+  let validatedTeam = null;
+  let teamSnapshot = null;
+  let validatedUser = null;
+  let userSnapshot = null;
 
-  const prevStatus = investigation.status;
-  investigation.assignedTo = assignedTo;
-  investigation.assignedAt = new Date();
+  // Determine effective team
+  let effectiveTeamId = targetTeamId;
+  if (effectiveTeamId === undefined) {
+    // If team is not specified in the payload, retain current assigned team if present
+    effectiveTeamId = investigation.assignedTeamId;
+  }
+
+  if (effectiveTeamId && !isTeamExplicitlyCleared) {
+    const { team } = await validateTeamAssignment({ organizationId, projectId, teamId: effectiveTeamId });
+    validatedTeam = team;
+    teamSnapshot = buildTeamSnapshot(team);
+  }
+
+  // Determine individual assignee
+  if (isUserExplicitlyCleared) {
+    // Explicitly unassigning individual member while keeping team
+    validatedUser = null;
+    userSnapshot = null;
+  } else if (targetUserId) {
+    // Validating new or specified individual
+    const { user, employeeProfile } = await validateAssigneeForTeam({
+      organizationId,
+      projectId,
+      teamId: validatedTeam ? validatedTeam._id : null,
+      userId: targetUserId
+    });
+    validatedUser = user;
+    userSnapshot = buildUserSnapshot(user, employeeProfile);
+  } else if (targetUserId === undefined) {
+    // User was not supplied in payload.
+    // If team changed, check if existing user belongs to new team!
+    if (validatedTeam && prevTeamId && validatedTeam._id.toString() !== prevTeamId.toString()) {
+      if (prevUserId) {
+        // Changing team: If current assigned person is NOT a member of new Team, reject!
+        const { user, employeeProfile } = await validateAssigneeForTeam({
+          organizationId,
+          projectId,
+          teamId: validatedTeam._id,
+          userId: prevUserId
+        });
+        validatedUser = user;
+        userSnapshot = buildUserSnapshot(user, employeeProfile);
+      }
+    } else if (investigation.assignedTo) {
+      // Keep existing assigned user
+      const existingUser = await User.findById(investigation.assignedTo).lean();
+      if (existingUser) {
+        const existingProfile = await EmployeeProfile.findOne({
+          organizationId,
+          userId: existingUser._id,
+          status: 'ACTIVE'
+        }).lean();
+        validatedUser = existingUser;
+        userSnapshot = investigation.assignedUserSnapshot || buildUserSnapshot(existingUser, existingProfile);
+      }
+    }
+  }
+
+  // Persist assignment changes
+  investigation.assignedTeamId = validatedTeam ? validatedTeam._id : null;
+  investigation.assignedTeamSnapshot = teamSnapshot || undefined;
+  investigation.assignedTo = validatedUser ? validatedUser._id : null;
+  investigation.assignedUserSnapshot = userSnapshot || undefined;
+  investigation.assignedAt = (validatedTeam || validatedUser) ? new Date() : null;
   investigation.updatedBy = actor?.userId || actor?.actorId;
   await investigation.save();
+
+  // Audit event
+  const isReassigned = Boolean(prevTeamId || prevUserId);
+  const eventType = isReassigned ? 'REASSIGNED' : 'ASSIGNED';
+
+  let defaultComment = '';
+  if (validatedTeam && validatedUser) {
+    defaultComment = `Assigned to ${validatedTeam.name} · ${userSnapshot?.displayName || validatedUser.displayName}`;
+  } else if (validatedTeam) {
+    defaultComment = `Assigned to team ${validatedTeam.name}`;
+  } else if (validatedUser) {
+    defaultComment = `Assigned to user ${userSnapshot?.displayName || validatedUser.displayName}`;
+  } else {
+    defaultComment = 'Assignment updated';
+  }
 
   await InvestigationEvent.create({
     investigationId: investigation._id,
@@ -230,14 +519,17 @@ export async function assignInvestigation({
     actorId: actor?.userId || actor?.actorId,
     actorEmail: actor?.email,
     actorDisplayName: actor?.displayName,
-    eventType: 'ASSIGNED',
+    eventType,
     previousStatus: prevStatus,
     newStatus: prevStatus,
-    comment: comment || `Assigned to ${assignee?.displayName || assignee?.email || assignedTo}`,
+    comment: comment || defaultComment,
     metadata: {
-      assignedTo,
-      assigneeName: assignee?.displayName,
-      assigneeEmail: assignee?.email
+      previousTeam: prevTeamSnapshot || (prevTeamId ? { teamId: prevTeamId } : null),
+      newTeam: teamSnapshot || null,
+      previousAssignee: prevUserSnapshot || (prevUserId ? { userId: prevUserId } : null),
+      newAssignee: userSnapshot || null,
+      changedBy: actor?.displayName || actor?.email || actor?.userId,
+      changedAt: new Date()
     }
   });
 
@@ -435,7 +727,8 @@ export async function getInvestigation({
     .populate('instrumentId', 'code name')
     .populate('deviceId', 'uid name')
     .populate('gatewayId', 'uid name')
-    .populate('assignedTo', 'displayName email')
+    .populate('assignedTeamId', 'teamCode name status')
+    .populate('assignedTo', 'displayName email status')
     .populate('createdBy', 'displayName email')
     .populate('completedBy', 'displayName email')
     .populate('alarmId', 'title category currentSeverity highestSeverity status triggeredAt parameterCode')
@@ -470,6 +763,7 @@ export async function listInvestigations({
   deviceId,
   gatewayId,
   assignedTo,
+  assignedTeamId,
   priority,
   limit = 50,
   skip = 0
@@ -481,16 +775,137 @@ export async function listInvestigations({
   if (deviceId) query.deviceId = deviceId;
   if (gatewayId) query.gatewayId = gatewayId;
   if (assignedTo) query.assignedTo = assignedTo;
+  if (assignedTeamId) query.assignedTeamId = assignedTeamId;
   if (priority) query.priority = priority;
 
   const investigations = await Investigation.find(query)
     .sort({ createdAt: -1 })
     .skip(Number(skip))
     .limit(Math.min(Number(limit), 200))
-    .populate('assignedTo', 'displayName email')
+    .populate('assignedTeamId', 'teamCode name status')
+    .populate('assignedTo', 'displayName email status')
     .populate('instrumentId', 'code name')
     .populate('alarmId', 'title currentSeverity highestSeverity status')
     .lean();
 
   return investigations;
+}
+
+/**
+ * Retrieve candidate assignment options (teams and members) for a project.
+ * Phase A1E: Scoped strictly to project and organization.
+ */
+export async function getInvestigationAssignmentOptions({ projectId, organizationId, teamId }) {
+  if (!projectId || !organizationId) {
+    throw new ApiError(400, 'projectId and organizationId are required');
+  }
+
+  // 1. Find all ACTIVE ProjectTeamAccess for this project and organization
+  const activeAccessList = await ProjectTeamAccess.find({
+    organizationId,
+    projectId,
+    status: 'ACTIVE'
+  }).lean();
+
+  const accessTeamIds = activeAccessList.map(a => a.teamId);
+
+  // 2. Find matching ACTIVE Teams in organization
+  const activeTeams = await Team.find({
+    _id: { $in: accessTeamIds },
+    organizationId,
+    status: 'ACTIVE'
+  }).lean();
+
+  // 3. For each eligible team, get lead displayName and active member count
+  const eligibleTeams = await Promise.all(activeTeams.map(async (t) => {
+    let leadName = null;
+    if (t.teamLeadUserId) {
+      const leadProfile = await EmployeeProfile.findOne({
+        organizationId,
+        userId: t.teamLeadUserId,
+        status: 'ACTIVE'
+      }).select('displayName').lean();
+      if (leadProfile) {
+        leadName = leadProfile.displayName;
+      } else {
+        const leadUser = await User.findById(t.teamLeadUserId).select('displayName').lean();
+        leadName = leadUser?.displayName || null;
+      }
+    }
+
+    const activeMembersCount = await TeamMember.countDocuments({
+      organizationId,
+      teamId: t._id,
+      status: 'ACTIVE'
+    });
+
+    return {
+      teamId: t._id,
+      teamCode: t.teamCode,
+      name: t.name,
+      lead: leadName,
+      activeMemberCount: activeMembersCount
+    };
+  }));
+
+  // If teamId query parameter was provided, return eligible members for that team
+  let eligibleMembers = [];
+  if (teamId) {
+    if (!mongoose.Types.ObjectId.isValid(teamId)) {
+      throw new ApiError(400, 'Invalid teamId parameter');
+    }
+
+    const isEligible = activeTeams.some(t => t._id.toString() === teamId.toString());
+    if (!isEligible) {
+      throw new ApiError(400, 'Team is not eligible or active for this project');
+    }
+
+    const teamMembers = await TeamMember.find({
+      organizationId,
+      teamId,
+      status: 'ACTIVE'
+    }).lean();
+
+    const userIds = teamMembers.map(tm => tm.userId);
+
+    const [projectMembers, orgAdmins, profiles, users] = await Promise.all([
+      ProjectMember.find({ projectId, userId: { $in: userIds }, status: 'ACTIVE' }).lean(),
+      OrganizationMember.find({ organizationId, userId: { $in: userIds }, organizationRole: 'ADMINISTRATOR', status: 'ACTIVE' }).lean(),
+      EmployeeProfile.find({ organizationId, userId: { $in: userIds }, status: 'ACTIVE' }).lean(),
+      User.find({ _id: { $in: userIds }, status: 'ACTIVE' }).lean()
+    ]);
+
+    const projectUserIds = new Set([
+      ...projectMembers.map(pm => pm.userId.toString()),
+      ...orgAdmins.map(oa => oa.userId.toString())
+    ]);
+
+    const profileMap = new Map(profiles.map(p => [p.userId.toString(), p]));
+    const userMap = new Map(users.map(u => [u._id.toString(), u]));
+
+    for (const tm of teamMembers) {
+      const uIdStr = tm.userId.toString();
+      if (projectUserIds.has(uIdStr)) {
+        const prof = profileMap.get(uIdStr);
+        const usr = userMap.get(uIdStr);
+        if (usr) {
+          eligibleMembers.push({
+            userId: tm.userId,
+            employeeId: prof?._id || null,
+            employeeCode: prof?.employeeCode || null,
+            displayName: prof?.displayName || usr.displayName,
+            designation: prof?.designation || null,
+            membershipRole: tm.membershipRole || 'MEMBER',
+            isLead: tm.membershipRole === 'LEAD'
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    eligibleTeams,
+    teamId: teamId || null,
+    eligibleMembers
+  };
 }

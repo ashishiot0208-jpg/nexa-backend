@@ -78,7 +78,37 @@ const projectTeamAccessSchema = new Schema({
 
 projectTeamAccessSchema.index({ organizationId: 1, projectId: 1, teamId: 1 }, { unique: true });
 
+/**
+ * Employee Invitation
+ * Client-side invitation model for employee onboarding into an organization and project.
+ * Tokens are stored hashed (SHA-256), never raw.
+ */
+const employeeInvitationSchema = new Schema({
+  organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
+  projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
+  emailNormalized: { type: String, required: true, lowercase: true, trim: true, index: true },
+  displayName: { type: String, required: true, trim: true },
+  employeeCode: { type: String, uppercase: true, trim: true },
+  designation: { type: String, trim: true },
+  department: { type: String, trim: true },
+  phone: { type: String, trim: true },
+  organizationRole: { type: String, enum: ['ADMINISTRATOR', 'ENGINEER', 'OPERATOR', 'VIEWER'], required: true },
+  projectRole: { type: String, enum: ['ADMINISTRATOR', 'ENGINEER', 'OPERATOR', 'VIEWER'], required: true },
+  status: { type: String, enum: ['PENDING', 'ACCEPTED', 'REVOKED', 'EXPIRED'], default: 'PENDING', index: true },
+  tokenHash: { type: String, required: true, unique: true, index: true },
+  expiresAt: { type: Date, required: true, index: true },
+  invitedByUserId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  acceptedByUserId: { type: Schema.Types.ObjectId, ref: 'User' },
+  acceptedAt: { type: Date },
+  revokedAt: { type: Date }
+}, { timestamps: true });
+
+employeeInvitationSchema.index({ organizationId: 1, projectId: 1, emailNormalized: 1 });
+employeeInvitationSchema.index({ organizationId: 1, projectId: 1, status: 1 });
+
 export const EmployeeProfile = model('EmployeeProfile', employeeProfileSchema);
 export const Team = model('Team', teamSchema);
 export const TeamMember = model('TeamMember', teamMemberSchema);
 export const ProjectTeamAccess = model('ProjectTeamAccess', projectTeamAccessSchema);
+export const EmployeeInvitation = model('EmployeeInvitation', employeeInvitationSchema);
+

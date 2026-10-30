@@ -1,14 +1,19 @@
 import { Router } from 'express';
+import mongoose from 'mongoose';
 import { z } from 'zod';
+import jwt from 'jsonwebtoken';
 import {
   EmployeeProfile,
   Team,
   TeamMember,
   ProjectTeamAccess,
   OrganizationMember,
+  ProjectMember,
   Project,
-  User
+  User,
+  EmployeeInvitation
 } from '../models/index.js';
+import { env } from '../config/env.js';
 import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
@@ -20,9 +25,72 @@ import {
   validatePermissions
 } from '../config/permissions.js';
 import { getUserProjectTeamPermissions, calculateProjectAccessReadiness } from '../services/workforce-permission.service.js';
+import {
+  createEmployeeInvitation,
+  listEmployeeInvitations,
+  getEmployeeInvitation,
+  regenerateEmployeeInvitation,
+  revokeEmployeeInvitation,
+  validateInvitationToken,
+  acceptEmployeeInvitation
+} from '../services/employee-invitation.service.js';
 
 const router = Router();
+
+// ============================================================================
+// PUBLIC / ONBOARDING EMPLOYEE INVITATION ENDPOINTS (Phase A1F)
+// ============================================================================
+
+router.get('/employee-invitations/validate', asyncHandler(async (req, res) => {
+  const token = req.query.token;
+  if (!token) throw new ApiError(400, 'Invitation token is required');
+  const result = await validateInvitationToken(token);
+  res.json(result);
+}));
+
+router.post('/employee-invitations/accept', asyncHandler(async (req, res) => {
+  const { token, password } = req.body;
+  if (!token) throw new ApiError(400, 'Invitation token is required');
+
+  let authUser = null;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      const jwtToken = authHeader.slice(7);
+      const payload = jwt.verify(jwtToken, env.jwtSecret);
+      const u = await User.findById(payload.sub).lean();
+      if (u && u.status === 'ACTIVE') {
+        authUser = {
+          userId: u._id.toString(),
+          email: u.email,
+          displayName: u.displayName,
+          organizationId: payload.organizationId,
+          organizationRole: payload.organizationRole
+        };
+      }
+    } catch (_) {}
+  }
+
+  const result = await acceptEmployeeInvitation({
+    rawToken: token,
+    password,
+    authUser
+  });
+
+  await audit({
+    req,
+    organizationId: result.organizationId,
+    projectId: result.projectId,
+    action: 'EMPLOYEE_INVITATION_ACCEPTED',
+    resourceType: 'EmployeeInvitation',
+    newState: { email: result.email }
+  });
+
+  res.json(result);
+}));
+
 router.use(requireAuth);
+
 
 // ============================================================================
 // HELPER GUARDS & VALIDATIONS
@@ -463,14 +531,17 @@ router.get('/organizations/:organizationId/teams', asyncHandler(async (req, res)
   const teamIds = teams.map((t) => t._id);
   const leadUserIds = teams.map((t) => t.teamLeadUserId).filter(Boolean);
 
+  const orgObjectId = new mongoose.Types.ObjectId(String(req.auth.organizationId));
+  const teamObjectIds = teamIds.map((id) => new mongoose.Types.ObjectId(String(id)));
+
   const [leadUsers, activeMemberAgg, totalMemberAgg] = await Promise.all([
     User.find({ _id: { $in: leadUserIds } }).select('displayName email').lean(),
     TeamMember.aggregate([
-      { $match: { organizationId: req.auth.organizationId, teamId: { $in: teamIds }, status: 'ACTIVE' } },
+      { $match: { organizationId: orgObjectId, teamId: { $in: teamObjectIds }, status: 'ACTIVE' } },
       { $group: { _id: '$teamId', count: { $sum: 1 } } }
     ]),
     TeamMember.aggregate([
-      { $match: { organizationId: req.auth.organizationId, teamId: { $in: teamIds } } },
+      { $match: { organizationId: orgObjectId, teamId: { $in: teamObjectIds } } },
       { $group: { _id: '$teamId', count: { $sum: 1 } } }
     ])
   ]);
@@ -954,12 +1025,20 @@ router.patch('/organizations/:organizationId/teams/:teamId/members/:userId', asy
     if (!['ACTIVE', 'INACTIVE'].includes(req.body.status)) {
       throw new ApiError(400, 'status must be ACTIVE or INACTIVE');
     }
-    member.status = req.body.status;
-    if (req.body.status === 'INACTIVE') {
-      member.leftAt = new Date();
-    } else {
+    if (req.body.status === 'ACTIVE') {
+      const parentTeam = await Team.findById(req.params.teamId);
+      if (parentTeam && parentTeam.status === 'INACTIVE') {
+        throw new ApiError(400, 'Cannot activate member in an inactive team');
+      }
       member.leftAt = undefined;
+    } else {
+      member.leftAt = new Date();
     }
+    member.status = req.body.status;
+  }
+
+  if (member.membershipRole === 'LEAD' && member.status === 'ACTIVE') {
+    await Team.findByIdAndUpdate(req.params.teamId, { teamLeadUserId: member.userId, updatedBy: req.auth.userId });
   }
 
   member.updatedBy = req.auth.userId;
@@ -1031,10 +1110,13 @@ router.get(
     const teamMap = new Map(teams.map((t) => [t._id.toString(), t]));
 
     const leadUserIds = teams.map((t) => t.teamLeadUserId).filter(Boolean);
+    const orgObjectId = new mongoose.Types.ObjectId(String(req.auth.organizationId));
+    const teamObjectIds = teamIds.map((id) => new mongoose.Types.ObjectId(String(id)));
+
     const [leadUsers, activeMemberAgg] = await Promise.all([
       User.find({ _id: { $in: leadUserIds } }).select('displayName email').lean(),
       TeamMember.aggregate([
-        { $match: { organizationId: req.auth.organizationId, teamId: { $in: teamIds }, status: 'ACTIVE' } },
+        { $match: { organizationId: orgObjectId, teamId: { $in: teamObjectIds }, status: 'ACTIVE' } },
         { $group: { _id: '$teamId', count: { $sum: 1 } } }
       ])
     ]);
@@ -1412,4 +1494,171 @@ router.patch('/projects/:projectId/access-mode', asyncHandler(async (req, res) =
   });
 }));
 
+// ============================================================================
+// 8. EMPLOYEE INVITATION MANAGEMENT ENDPOINTS (Phase A1F)
+// ============================================================================
+
+async function requireEmployeeInvitationAccess(req) {
+  const projectId = req.params.projectId || req.body?.projectId;
+  if (!projectId) throw new ApiError(400, 'Project ID is required');
+
+  const userOrgId = req.auth?.organizationId?.toString();
+  if (!userOrgId) throw new ApiError(403, 'Organization context missing');
+
+  const project = await Project.findById(projectId).select('organizationId accessMode').lean();
+  if (!project) throw new ApiError(404, 'Project not found');
+
+  const projOrgId = project.organizationId?.toString();
+  if (!projOrgId || userOrgId !== projOrgId) {
+    throw new ApiError(403, 'Forbidden: Organization access mismatch');
+  }
+
+  // Administrator override check
+  if (req.auth.organizationRole === 'ADMINISTRATOR') {
+    return project;
+  }
+
+  const projectMembership = await ProjectMember.findOne({
+    projectId: project._id,
+    userId: req.auth.userId,
+    status: 'ACTIVE'
+  }).lean();
+
+  if (!projectMembership) {
+    throw new ApiError(403, 'No access to this project');
+  }
+
+  if (projectMembership.role === 'ADMINISTRATOR') {
+    return project;
+  }
+
+  // If in TEAM_PERMISSIONS mode, check administration.manageEmployees
+  const accessMode = project.accessMode || 'ROLE_BASED';
+  if (accessMode === 'TEAM_PERMISSIONS') {
+    const teamPerms = await getUserProjectTeamPermissions({
+      organizationId: project.organizationId,
+      projectId: project._id,
+      userId: req.auth.userId
+    });
+    if (teamPerms.permissions && teamPerms.permissions.includes('administration.manageEmployees')) {
+      return project;
+    }
+  }
+
+  throw new ApiError(403, 'Administrator access or employee management permission required');
+}
+
+function getClientBaseUrl(req) {
+  const origin = req.get('origin') || req.get('referer');
+  if (origin) {
+    try {
+      const u = new URL(origin);
+      return `${u.protocol}//${u.host}`;
+    } catch (_) {}
+  }
+  return env.appUrl || 'http://localhost:4200';
+}
+
+const createEmployeeInvitationSchema = z.object({
+  displayName: z.string().min(1, 'Display name is required'),
+  email: z.string().email('Valid email is required'),
+  employeeCode: z.string().optional(),
+  designation: z.string().optional(),
+  department: z.string().optional(),
+  phone: z.string().optional(),
+  organizationRole: z.enum(['ADMINISTRATOR', 'ENGINEER', 'OPERATOR', 'VIEWER']).default('ENGINEER'),
+  projectRole: z.enum(['ADMINISTRATOR', 'ENGINEER', 'OPERATOR', 'VIEWER']).default('ENGINEER')
+});
+
+router.get('/projects/:projectId/employee-invitations', asyncHandler(async (req, res) => {
+  const project = await requireEmployeeInvitationAccess(req);
+  const rows = await listEmployeeInvitations({
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    status: req.query.status
+  });
+  res.json(rows);
+}));
+
+router.post('/projects/:projectId/employee-invitations', asyncHandler(async (req, res) => {
+  const project = await requireEmployeeInvitationAccess(req);
+  const validated = createEmployeeInvitationSchema.parse(req.body);
+
+  const result = await createEmployeeInvitation({
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    invitedByUserId: req.auth.userId,
+    payload: validated,
+    baseUrl: getClientBaseUrl(req)
+  });
+
+  await audit({
+    req,
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    action: 'EMPLOYEE_INVITATION_CREATED',
+    resourceType: 'EmployeeInvitation',
+    resourceId: result.invitation.id,
+    newState: result.invitation
+  });
+
+  res.status(201).json(result);
+}));
+
+router.get('/projects/:projectId/employee-invitations/:invitationId', asyncHandler(async (req, res) => {
+  const project = await requireEmployeeInvitationAccess(req);
+  const inv = await getEmployeeInvitation({
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    invitationId: req.params.invitationId
+  });
+  res.json(inv);
+}));
+
+router.post('/projects/:projectId/employee-invitations/:invitationId/regenerate', asyncHandler(async (req, res) => {
+  const project = await requireEmployeeInvitationAccess(req);
+  const result = await regenerateEmployeeInvitation({
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    invitationId: req.params.invitationId,
+    userId: req.auth.userId,
+    baseUrl: getClientBaseUrl(req)
+  });
+
+  await audit({
+    req,
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    action: 'EMPLOYEE_INVITATION_REGENERATED',
+    resourceType: 'EmployeeInvitation',
+    resourceId: req.params.invitationId,
+    newState: { status: result.status, expiresAt: result.expiresAt }
+  });
+
+  res.json(result);
+}));
+
+router.post('/projects/:projectId/employee-invitations/:invitationId/revoke', asyncHandler(async (req, res) => {
+  const project = await requireEmployeeInvitationAccess(req);
+  const result = await revokeEmployeeInvitation({
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    invitationId: req.params.invitationId,
+    userId: req.auth.userId
+  });
+
+  await audit({
+    req,
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    action: 'EMPLOYEE_INVITATION_REVOKED',
+    resourceType: 'EmployeeInvitation',
+    resourceId: req.params.invitationId,
+    newState: { status: result.status, revokedAt: result.revokedAt }
+  });
+
+  res.json(result);
+}));
+
 export default router;
+
