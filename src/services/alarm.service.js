@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { Alarm, AlarmEvent, Investigation } from '../models/index.js';
+import { Alarm, AlarmEvent, Investigation, User, EmployeeProfile } from '../models/index.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from './audit.service.js';
 import { ensureProjectAccess } from '../middleware/auth.js';
@@ -20,6 +20,84 @@ export const CANONICAL_ALARM_CATEGORIES = [
 ];
 
 export const CANONICAL_ALARM_STATUSES = ['OPEN', 'ACKNOWLEDGED', 'RESOLVED'];
+
+/**
+ * Resolve actor user IDs to readable user identity:
+ * Priority:
+ * 1. EmployeeProfile.displayName (scoped to organization)
+ * 2. User.displayName
+ * 3. User.email
+ * 4. Raw user ID string
+ *
+ * Avoids N+1 queries by batch-fetching all unique actor IDs in one query for Users
+ * and one query for EmployeeProfiles.
+ */
+export async function resolveActorsForAlarms(alarms, organizationId) {
+  if (!Array.isArray(alarms) || alarms.length === 0) return alarms;
+
+  const actorIdSet = new Set();
+  for (const alarm of alarms) {
+    const ack = alarm.acknowledgedBy?._id || alarm.acknowledgedBy;
+    if (ack && mongoose.Types.ObjectId.isValid(ack)) {
+      actorIdSet.add(String(ack));
+    }
+    const res = alarm.resolvedBy?._id || alarm.resolvedBy;
+    if (res && mongoose.Types.ObjectId.isValid(res)) {
+      actorIdSet.add(String(res));
+    }
+  }
+
+  if (actorIdSet.size === 0) return alarms;
+
+  const actorIds = Array.from(actorIdSet);
+
+  const [users, profiles] = await Promise.all([
+    User.find({ _id: { $in: actorIds } }).select('displayName email').lean(),
+    organizationId
+      ? EmployeeProfile.find({ organizationId, userId: { $in: actorIds } }).select('userId displayName designation employeeCode').lean()
+      : []
+  ]);
+
+  const userMap = new Map(users.map(u => [String(u._id), u]));
+  const profileMap = new Map(profiles.map(p => [String(p.userId), p]));
+
+  function resolveActor(raw) {
+    if (!raw) return null;
+    const idStr = String(raw._id || raw);
+    if (!mongoose.Types.ObjectId.isValid(idStr)) {
+      return typeof raw === 'object' ? raw : { _id: idStr, displayName: idStr };
+    }
+
+    const profile = profileMap.get(idStr);
+    const user = userMap.get(idStr);
+
+    const displayName = profile?.displayName?.trim() ||
+      user?.displayName?.trim() ||
+      user?.email?.trim() ||
+      idStr;
+
+    const email = user?.email || (typeof raw === 'object' ? raw.email : undefined);
+
+    return {
+      _id: idStr,
+      displayName,
+      email,
+      employeeCode: profile?.employeeCode || undefined,
+      designation: profile?.designation || undefined
+    };
+  }
+
+  for (const alarm of alarms) {
+    if (alarm.acknowledgedBy) {
+      alarm.acknowledgedBy = resolveActor(alarm.acknowledgedBy);
+    }
+    if (alarm.resolvedBy) {
+      alarm.resolvedBy = resolveActor(alarm.resolvedBy);
+    }
+  }
+
+  return alarms;
+}
 
 export function humanizeParameter(paramCode) {
   if (!paramCode) return 'Parameter';
@@ -226,7 +304,9 @@ export async function acknowledgeAlarm({ alarmId, projectId, organizationId, use
 
   // Idempotent safe double acknowledgment
   if (alarm.status === 'ACKNOWLEDGED') {
-    return alarm;
+    const populatedExisting = await Alarm.findById(alarm._id).populate('instrumentId', 'code name').lean();
+    await resolveActorsForAlarms([populatedExisting], organizationId);
+    return populatedExisting;
   }
 
   if (alarm.status !== 'OPEN' && alarm.state !== 'TRIGGERED') {
@@ -256,7 +336,11 @@ export async function acknowledgeAlarm({ alarmId, projectId, organizationId, use
   if (!updated) {
     // Check if another concurrent request already acknowledged it
     const recheck = await Alarm.findOne({ _id: alarmId, projectId, organizationId });
-    if (recheck?.status === 'ACKNOWLEDGED') return recheck;
+    if (recheck?.status === 'ACKNOWLEDGED') {
+      const populatedRecheck = await Alarm.findById(recheck._id).populate('instrumentId', 'code name').lean();
+      await resolveActorsForAlarms([populatedRecheck], organizationId);
+      return populatedRecheck;
+    }
     throw new ApiError(409, 'Concurrent modification conflict while acknowledging alarm');
   }
 
@@ -298,7 +382,9 @@ export async function acknowledgeAlarm({ alarmId, projectId, organizationId, use
     severity: updated.currentSeverity
   });
 
-  return updated;
+  const populated = await Alarm.findById(updated._id).populate('instrumentId', 'code name').lean();
+  await resolveActorsForAlarms([populated], organizationId);
+  return populated;
 }
 
 /**
@@ -391,7 +477,9 @@ export async function resolveAlarm({ alarmId, projectId, organizationId, user, u
     severity: updated.currentSeverity
   });
 
-  return updated;
+  const populated = await Alarm.findById(updated._id).populate('instrumentId', 'code name').lean();
+  await resolveActorsForAlarms([populated], organizationId);
+  return populated;
 }
 
 /**
@@ -487,6 +575,8 @@ export async function getAlarm({ alarmId, projectId, organizationId }) {
     throw new ApiError(404, 'Alarm not found');
   }
 
+  await resolveActorsForAlarms([alarm], organizationId);
+
   const events = await AlarmEvent.find({ alarmId: alarm._id })
     .sort({ createdAt: 1 })
     .populate('actorId', 'displayName email')
@@ -561,6 +651,8 @@ export async function listAlarms({
     .limit(parsedLimit)
     .populate('instrumentId', 'code name')
     .lean();
+
+  await resolveActorsForAlarms(alarms, organizationId);
 
   // Mark legacy indicator for clean caller identification
   return alarms.map((a) => ({
