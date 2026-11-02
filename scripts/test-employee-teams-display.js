@@ -101,7 +101,7 @@ async function runTests() {
     if (!drawerTeam1 || drawerTeam1.membershipRole !== 'MEMBER') {
       throw new Error('Drawer team info for Employee-1 mismatch');
     }
-    if (accessData.role !== 'ENGINEER' || accessData.accessProfile !== 'ROLE_PRESET' || accessData.permissions.length !== 20) {
+    if (accessData.role !== 'ENGINEER' || accessData.accessProfile !== 'ROLE_PRESET' || accessData.permissions.length !== 24) {
       throw new Error(`Project access changed unexpectedly: role=${accessData.role}, profile=${accessData.accessProfile}, perms=${accessData.permissions.length}`);
     }
     console.log('[PASS] Employee Project Access endpoint returns read-only teams array:');

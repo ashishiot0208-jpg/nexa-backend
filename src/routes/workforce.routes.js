@@ -1665,13 +1665,13 @@ router.patch(
       member.status = 'ACTIVE';
     }
 
-    let finalProfile = newProfile || member.accessProfile || 'ROLE_PRESET';
-    let finalPermissions = [];
-
     // Compare newPermissions with role preset to automatically return to ROLE_PRESET if matched
     const presetPerms = (ROLE_PRESETS[effectiveRole] || []).slice().sort();
     const sortedNewPerms = Array.isArray(newPermissions) ? [...newPermissions].sort() : null;
     const matchesPreset = sortedNewPerms && sortedNewPerms.length === presetPerms.length && sortedNewPerms.every((k, idx) => k === presetPerms[idx]);
+
+    let finalProfile = newProfile || (Array.isArray(newPermissions) && !matchesPreset ? 'CUSTOM' : (member.accessProfile || 'ROLE_PRESET'));
+    let finalPermissions = [];
 
     if (effectiveRole === 'ADMINISTRATOR') {
       finalProfile = 'ADMINISTRATOR';

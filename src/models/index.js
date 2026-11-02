@@ -19,3 +19,4 @@ export * from './engineering-rule.js';
 export * from './alarm-policy.js';
 export * from './investigation.js';
 export * from './workforce.js';
+export * from './task.js';

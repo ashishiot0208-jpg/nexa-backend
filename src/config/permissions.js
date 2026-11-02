@@ -120,6 +120,20 @@ export const PERMISSION_GROUPS = [
     ]
   },
   {
+    id: 'TASKS',
+    label: 'Tasks',
+    description: 'Operational and general task management and field work',
+    permissions: [
+      { key: 'tasks.view', label: 'View Tasks', description: 'View general operational tasks and status' },
+      { key: 'tasks.create', label: 'Create Tasks', description: 'Create general tasks' },
+      { key: 'tasks.assign', label: 'Assign Tasks', description: 'Assign tasks to teams or employees' },
+      { key: 'tasks.start', label: 'Start Tasks', description: 'Start assigned tasks' },
+      { key: 'tasks.update', label: 'Update Tasks', description: 'Add progress updates and comments to tasks' },
+      { key: 'tasks.complete', label: 'Complete Tasks', description: 'Mark tasks as completed' },
+      { key: 'tasks.cancel', label: 'Cancel Tasks', description: 'Cancel open or in-progress tasks' }
+    ]
+  },
+  {
     id: 'ADMINISTRATION',
     label: 'Administration',
     description: 'Workforce management, teams, project access and settings',
@@ -273,7 +287,11 @@ export const ROLE_PRESETS = {
     'investigations.addFinding',
     'investigations.complete',
     'reports.view',
-    'reports.export'
+    'reports.export',
+    'tasks.view',
+    'tasks.start',
+    'tasks.update',
+    'tasks.complete'
   ],
   OPERATOR: [
     'overview.view',
@@ -288,7 +306,11 @@ export const ROLE_PRESETS = {
     'investigations.view',
     'investigations.start',
     'investigations.addFinding',
-    'reports.view'
+    'reports.view',
+    'tasks.view',
+    'tasks.start',
+    'tasks.update',
+    'tasks.complete'
   ],
   VIEWER: [
     'overview.view',
@@ -300,7 +322,8 @@ export const ROLE_PRESETS = {
     'trends.export',
     'alarms.view',
     'investigations.view',
-    'reports.view'
+    'reports.view',
+    'tasks.view'
   ]
 };
 

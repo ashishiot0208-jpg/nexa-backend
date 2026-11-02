@@ -83,15 +83,15 @@ async function runTests() {
     // SECTION 1: VERIFY EXACT CANONICAL ROLE PRESET COUNTS
     // ------------------------------------------------------------------------
     console.log('\n--- Section 1: Canonical Role Preset Counts ---');
-    console.log(`ADMINISTRATOR preset count: ${ROLE_PRESETS.ADMINISTRATOR.length} (expected 35)`);
-    console.log(`ENGINEER preset count: ${ROLE_PRESETS.ENGINEER.length} (expected 20)`);
-    console.log(`OPERATOR preset count: ${ROLE_PRESETS.OPERATOR.length} (expected 13)`);
-    console.log(`VIEWER preset count: ${ROLE_PRESETS.VIEWER.length} (expected 10)`);
+    console.log(`ADMINISTRATOR preset count: ${ROLE_PRESETS.ADMINISTRATOR.length} (expected 42)`);
+    console.log(`ENGINEER preset count: ${ROLE_PRESETS.ENGINEER.length} (expected 24)`);
+    console.log(`OPERATOR preset count: ${ROLE_PRESETS.OPERATOR.length} (expected 17)`);
+    console.log(`VIEWER preset count: ${ROLE_PRESETS.VIEWER.length} (expected 11)`);
 
-    if (ROLE_PRESETS.ADMINISTRATOR.length !== 35) throw new Error(`ADMINISTRATOR preset has ${ROLE_PRESETS.ADMINISTRATOR.length}, expected 35`);
-    if (ROLE_PRESETS.ENGINEER.length !== 20) throw new Error(`ENGINEER preset has ${ROLE_PRESETS.ENGINEER.length}, expected 20`);
-    if (ROLE_PRESETS.OPERATOR.length !== 13) throw new Error(`OPERATOR preset has ${ROLE_PRESETS.OPERATOR.length}, expected 13`);
-    if (ROLE_PRESETS.VIEWER.length !== 10) throw new Error(`VIEWER preset has ${ROLE_PRESETS.VIEWER.length}, expected 10`);
+    if (ROLE_PRESETS.ADMINISTRATOR.length !== 42) throw new Error(`ADMINISTRATOR preset has ${ROLE_PRESETS.ADMINISTRATOR.length}, expected 42`);
+    if (ROLE_PRESETS.ENGINEER.length !== 24) throw new Error(`ENGINEER preset has ${ROLE_PRESETS.ENGINEER.length}, expected 24`);
+    if (ROLE_PRESETS.OPERATOR.length !== 17) throw new Error(`OPERATOR preset has ${ROLE_PRESETS.OPERATOR.length}, expected 17`);
+    if (ROLE_PRESETS.VIEWER.length !== 11) throw new Error(`VIEWER preset has ${ROLE_PRESETS.VIEWER.length}, expected 11`);
     console.log('[PASS] All role preset counts match exact target specifications.');
 
     // Verify GET /projects/:projectId/access-permissions returns these exact presets
@@ -99,13 +99,13 @@ async function runTests() {
       headers: { Authorization: `Bearer ${adminToken}` }
     });
     const catalogData = await catalogRes.json();
-    if (catalogData.rolePresets.ADMINISTRATOR.length !== 35 ||
-        catalogData.rolePresets.ENGINEER.length !== 20 ||
-        catalogData.rolePresets.OPERATOR.length !== 13 ||
-        catalogData.rolePresets.VIEWER.length !== 10) {
+    if (catalogData.rolePresets.ADMINISTRATOR.length !== 42 ||
+        catalogData.rolePresets.ENGINEER.length !== 24 ||
+        catalogData.rolePresets.OPERATOR.length !== 17 ||
+        catalogData.rolePresets.VIEWER.length !== 11) {
       throw new Error('access-permissions returned mismatched rolePresets counts');
     }
-    console.log('[PASS] GET /access-permissions serves exact 35/20/13/10 role presets.');
+    console.log('[PASS] GET /access-permissions serves exact 42/25/17/11 role presets.');
 
     // ------------------------------------------------------------------------
     // SECTION 2: VERIFY ADMINISTRATOR BEHAVIOR
@@ -115,10 +115,10 @@ async function runTests() {
       headers: { Authorization: `Bearer ${adminToken}` }
     });
     const adminEffData = await adminEffRes.json();
-    if (!adminEffData.isAdministrator || adminEffData.permissions.length !== 35) {
+    if (!adminEffData.isAdministrator || adminEffData.permissions.length !== 42) {
       throw new Error(`Admin override failed: isAdministrator=${adminEffData.isAdministrator}, count=${adminEffData.permissions.length}`);
     }
-    console.log('[PASS] Administrator has full project override with all 35 permissions.');
+    console.log('[PASS] Administrator has full project override with all 42 permissions.');
 
     // Verify restriction attempt on Administrator is disallowed/ignored
     const adminPatchRes = await fetch(`${baseUrl}/projects/${project._id}/employee-access/${adminUser._id}`, {
@@ -131,10 +131,10 @@ async function runTests() {
       })
     });
     const adminPatchData = await adminPatchRes.json();
-    if (adminPatchData.accessProfile !== 'ADMINISTRATOR' || adminPatchData.permissions.length !== 35) {
+    if (adminPatchData.accessProfile !== 'ADMINISTRATOR' || adminPatchData.permissions.length !== 42) {
       throw new Error(`Administrator permissions were restricted! Got ${adminPatchData.permissions.length} perms`);
     }
-    console.log('[PASS] Administrator permissions cannot be restricted; retains full 35 override.');
+    console.log('[PASS] Administrator permissions cannot be restricted; retains full 42 override.');
 
     // ------------------------------------------------------------------------
     // SECTION 3: VERIFY ENGINEER PRESET & ENFORCEMENT
@@ -151,8 +151,11 @@ async function runTests() {
       headers: { Authorization: `Bearer ${emp1Token}` }
     });
     const emp1EffData = await emp1EffRes.json();
-    if (emp1EffData.permissions.length !== 20) {
-      throw new Error(`Expected ENGINEER to have 20 permissions, got ${emp1EffData.permissions.length}`);
+    if (emp1EffData.permissions.length !== 24) {
+      throw new Error(`Expected ENGINEER to have 24 permissions, got ${emp1EffData.permissions.length}`);
+    }
+    if (emp1EffData.permissions.includes('tasks.create')) {
+      throw new Error('Default ENGINEER must NOT have tasks.create');
     }
     if (emp1EffData.permissions.includes('alarms.resolve')) {
       throw new Error('Default ENGINEER must NOT have alarms.resolve');
@@ -163,10 +166,14 @@ async function runTests() {
     if (!emp1EffData.permissions.includes('alarms.acknowledge') ||
         !emp1EffData.permissions.includes('investigations.start') ||
         !emp1EffData.permissions.includes('investigations.addFinding') ||
-        !emp1EffData.permissions.includes('investigations.complete')) {
+        !emp1EffData.permissions.includes('investigations.complete') ||
+        !emp1EffData.permissions.includes('tasks.view') ||
+        !emp1EffData.permissions.includes('tasks.start') ||
+        !emp1EffData.permissions.includes('tasks.update') ||
+        !emp1EffData.permissions.includes('tasks.complete')) {
       throw new Error('Default ENGINEER missing expected operational permissions');
     }
-    console.log(`[PASS] Default ENGINEER has exactly 20 permissions with correct operational subset.`);
+    console.log(`[PASS] Default ENGINEER has exactly 24 permissions with correct operational subset.`);
 
     // 3a. Resolve alarm direct API attempt -> 403
     const engResolveRes = await fetch(`${baseUrl}/projects/${project._id}/alarms/${alarmId}/resolve`, {
@@ -206,8 +213,8 @@ async function runTests() {
       headers: { Authorization: `Bearer ${operatorToken}` }
     });
     const opEffData = await opEffRes.json();
-    if (opEffData.permissions.length !== 13) {
-      throw new Error(`Expected OPERATOR to have 13 permissions, got ${opEffData.permissions.length}`);
+    if (opEffData.permissions.length !== 17) {
+      throw new Error(`Expected OPERATOR to have 17 permissions, got ${opEffData.permissions.length}`);
     }
     if (opEffData.permissions.includes('severityRules.view') ||
         opEffData.permissions.includes('severityRules.configure') ||
@@ -215,10 +222,13 @@ async function runTests() {
         opEffData.permissions.includes('alarmPolicies.configure') ||
         opEffData.permissions.includes('alarms.resolve') ||
         opEffData.permissions.includes('investigations.complete') ||
-        opEffData.permissions.includes('reports.export')) {
+        opEffData.permissions.includes('reports.export') ||
+        opEffData.permissions.includes('tasks.create') ||
+        opEffData.permissions.includes('tasks.assign') ||
+        opEffData.permissions.includes('tasks.cancel')) {
       throw new Error('OPERATOR contains unauthorized permissions');
     }
-    console.log(`[PASS] OPERATOR has exactly 13 permissions with engineering and administration excluded.`);
+    console.log(`[PASS] OPERATOR has exactly 17 permissions with engineering and administration excluded.`);
 
     // 4a. Operator configure severity rule -> 403
     const opSevRes = await fetch(`${baseUrl}/projects/${project._id}/severity-rules`, {
@@ -262,10 +272,10 @@ async function runTests() {
       headers: { Authorization: `Bearer ${viewerToken}` }
     });
     const viewEffData = await viewEffRes.json();
-    if (viewEffData.permissions.length !== 10) {
-      throw new Error(`Expected VIEWER to have 10 permissions, got ${viewEffData.permissions.length}`);
+    if (viewEffData.permissions.length !== 11) {
+      throw new Error(`Expected VIEWER to have 11 permissions, got ${viewEffData.permissions.length}`);
     }
-    console.log(`[PASS] VIEWER has exactly 10 read-only permissions.`);
+    console.log(`[PASS] VIEWER has exactly 11 read-only permissions.`);
 
     // 5a. Viewer mutation attempt (alarms.acknowledge) -> 403
     const viewAckRes = await fetch(`${baseUrl}/projects/${project._id}/alarms/${alarmId}/acknowledge`, {
@@ -288,7 +298,7 @@ async function runTests() {
     // ------------------------------------------------------------------------
     console.log('\n--- Section 6: Custom Access Profile Transitions & Isolation ---');
 
-    // 6a. Add alarms.resolve to emp1: Role remains ENGINEER, Profile becomes CUSTOM, 21 perms
+    // 6a. Add alarms.resolve to emp1: Role remains ENGINEER, Profile becomes CUSTOM, 26 perms
     const customPerms = [...ROLE_PRESETS.ENGINEER, 'alarms.resolve'];
     const customPatchRes = await fetch(`${baseUrl}/projects/${project._id}/employee-access/${emp1User._id}`, {
       method: 'PATCH',
@@ -300,23 +310,23 @@ async function runTests() {
       })
     });
     const customPatchData = await customPatchRes.json();
-    if (customPatchData.role !== 'ENGINEER' || customPatchData.accessProfile !== 'CUSTOM' || customPatchData.permissions.length !== 21) {
-      throw new Error(`Expected ENGINEER with CUSTOM profile and 21 perms, got role=${customPatchData.role}, profile=${customPatchData.accessProfile}, perms=${customPatchData.permissions.length}`);
+    if (customPatchData.role !== 'ENGINEER' || customPatchData.accessProfile !== 'CUSTOM' || customPatchData.permissions.length !== 25) {
+      throw new Error(`Expected ENGINEER with CUSTOM profile and 25 perms, got role=${customPatchData.role}, profile=${customPatchData.accessProfile}, perms=${customPatchData.permissions.length}`);
     }
-    console.log('[PASS] Added alarms.resolve: Role remains ENGINEER, Access Profile becomes CUSTOM, Permissions: 21.');
+    console.log('[PASS] Added alarms.resolve: Role remains ENGINEER, Access Profile becomes CUSTOM, Permissions: 25.');
 
     // 6b. Verify other Engineer (engineer@geonexa.test) is completely untouched
     const otherEngRes = await fetch(`${baseUrl}/projects/${project._id}/effective-permissions`, {
       headers: { Authorization: `Bearer ${engineer2Token}` }
     });
     const otherEngData = await otherEngRes.json();
-    if (otherEngData.role !== 'ENGINEER' || otherEngData.accessProfile !== 'ROLE_PRESET' || otherEngData.permissions.length !== 20) {
+    if (otherEngData.role !== 'ENGINEER' || otherEngData.accessProfile !== 'ROLE_PRESET' || otherEngData.permissions.length !== 24) {
       throw new Error(`Second Engineer was affected! Role=${otherEngData.role}, Profile=${otherEngData.accessProfile}, Perms=${otherEngData.permissions.length}`);
     }
     if (otherEngData.permissions.includes('alarms.resolve')) {
       throw new Error('Second Engineer received alarms.resolve unexpectedly!');
     }
-    console.log('[PASS] Modifying emp1 did NOT affect second Engineer (engineer@geonexa.test retains 20 preset perms).');
+    console.log('[PASS] Modifying emp1 did NOT affect second Engineer (engineer@geonexa.test retains 24 preset perms).');
 
     // 6c. Now remove alarms.resolve so permissions exactly match ENGINEER preset
     // Profile must automatically return to ROLE_PRESET
@@ -330,10 +340,10 @@ async function runTests() {
       })
     });
     const revertPatchData = await revertPatchRes.json();
-    if (revertPatchData.role !== 'ENGINEER' || revertPatchData.accessProfile !== 'ROLE_PRESET' || revertPatchData.permissions.length !== 20) {
-      throw new Error(`Expected automatic return to ROLE_PRESET with 20 perms, got role=${revertPatchData.role}, profile=${revertPatchData.accessProfile}, perms=${revertPatchData.permissions.length}`);
+    if (revertPatchData.role !== 'ENGINEER' || revertPatchData.accessProfile !== 'ROLE_PRESET' || revertPatchData.permissions.length !== 24) {
+      throw new Error(`Expected automatic return to ROLE_PRESET with 24 perms, got role=${revertPatchData.role}, profile=${revertPatchData.accessProfile}, perms=${revertPatchData.permissions.length}`);
     }
-    console.log('[PASS] Removing alarms.resolve back to exact ENGINEER preset: Profile automatically returns to ROLE_PRESET (20 perms).');
+    console.log('[PASS] Removing alarms.resolve back to exact ENGINEER preset: Profile automatically returns to ROLE_PRESET (24 perms).');
 
     // ------------------------------------------------------------------------
     // SECTION 7: VERIFY ARCHITECTURAL INTEGRITY
