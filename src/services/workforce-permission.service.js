@@ -1,4 +1,111 @@
 import { OrganizationMember, ProjectMember, Team, TeamMember, ProjectTeamAccess, Project, User, EmployeeProfile } from '../models/index.js';
+import { ALL_PERMISSION_KEYS, ROLE_PRESETS } from '../config/permissions.js';
+
+/**
+ * Effective Individual Employee Permission Resolver
+ * 
+ * Rules:
+ * 1. Administrator Override: If user is Org or Project ADMINISTRATOR, grant all 35 permissions.
+ * 2. Custom Employee Access: If ProjectMember has accessProfile === 'CUSTOM', return their explicit permissions.
+ * 3. Role Preset Fallback: If no custom overrides, return the standard permission preset for their project role.
+ * 4. Non-member / Inactive: Return empty permissions.
+ */
+export async function getEffectiveEmployeePermissions({ organizationId, projectId, userId }) {
+  if (!projectId || !userId) {
+    return {
+      organizationId: organizationId?.toString(),
+      projectId: projectId?.toString(),
+      userId: userId?.toString(),
+      isAdministrator: false,
+      role: null,
+      accessProfile: 'ROLE_PRESET',
+      permissions: []
+    };
+  }
+
+  // 1. Check Administrator status in Organization or Project
+  const [orgMember, projMember] = await Promise.all([
+    organizationId ? OrganizationMember.findOne({ organizationId, userId, status: 'ACTIVE' }).select('organizationRole').lean() : null,
+    ProjectMember.findOne({ projectId, userId, status: 'ACTIVE' }).lean()
+  ]);
+
+  const isOrgAdmin = orgMember?.organizationRole === 'ADMINISTRATOR';
+  const isProjAdmin = projMember?.role === 'ADMINISTRATOR';
+  const isAdministrator = isOrgAdmin || isProjAdmin;
+
+  if (isAdministrator) {
+    return {
+      organizationId: organizationId?.toString(),
+      projectId: projectId.toString(),
+      userId: userId.toString(),
+      isAdministrator: true,
+      role: 'ADMINISTRATOR',
+      accessProfile: 'ADMINISTRATOR',
+      permissions: Array.from(ALL_PERMISSION_KEYS)
+    };
+  }
+
+  if (!projMember) {
+    return {
+      organizationId: organizationId?.toString(),
+      projectId: projectId.toString(),
+      userId: userId.toString(),
+      isAdministrator: false,
+      role: null,
+      accessProfile: 'ROLE_PRESET',
+      permissions: []
+    };
+  }
+
+  const role = projMember.role || 'VIEWER';
+
+  // 1. Explicit PRESET / ROLE_PRESET always uses canonical role preset
+  if (projMember.accessProfile === 'ROLE_PRESET' || projMember.accessProfile === 'PRESET') {
+    return {
+      organizationId: organizationId?.toString(),
+      projectId: projectId.toString(),
+      userId: userId.toString(),
+      isAdministrator: false,
+      role,
+      accessProfile: 'ROLE_PRESET',
+      permissions: ROLE_PRESETS[role] || []
+    };
+  }
+
+  // 2. Explicit CUSTOM or unprofiled legacy overrides
+  const hasCustomOverrides =
+    projMember.accessProfile === 'CUSTOM' ||
+    (!projMember.accessProfile && (
+      (Array.isArray(projMember.permissions) && projMember.permissions.length > 0) ||
+      (Array.isArray(projMember.permissionOverrides) && projMember.permissionOverrides.length > 0)
+    ));
+
+  if (hasCustomOverrides) {
+    const customPerms = (Array.isArray(projMember.permissions) && projMember.permissions.length > 0)
+      ? projMember.permissions
+      : (projMember.permissionOverrides || []);
+    return {
+      organizationId: organizationId?.toString(),
+      projectId: projectId.toString(),
+      userId: userId.toString(),
+      isAdministrator: false,
+      role,
+      accessProfile: 'CUSTOM',
+      permissions: customPerms
+    };
+  }
+
+  // 3. Fallback to role preset
+  return {
+    organizationId: organizationId?.toString(),
+    projectId: projectId.toString(),
+    userId: userId.toString(),
+    isAdministrator: false,
+    role,
+    accessProfile: 'ROLE_PRESET',
+    permissions: ROLE_PRESETS[role] || []
+  };
+}
 
 /**
  * Effective Team Permission Resolver

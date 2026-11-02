@@ -56,10 +56,11 @@ async function runSuite() {
 
   // Clean up any previous test workforce data
   const prevTestTeams = await Team.find({ teamCode: /^TEST-/ }).select('_id').lean();
-  await TeamMember.deleteMany({ $or: [{ teamId: { $in: prevTestTeams.map((t) => t._id) } }, { organizationId: { $in: [org1Id, foreignOrgId] } }] });
+  const prevTestTeamIds = prevTestTeams.map((t) => t._id);
+  await TeamMember.deleteMany({ teamId: { $in: prevTestTeamIds } });
   await EmployeeProfile.deleteMany({ organizationId: { $in: [org1Id, foreignOrgId] }, employeeCode: /^TEST-/ });
   await Team.deleteMany({ organizationId: { $in: [org1Id, foreignOrgId] }, teamCode: /^TEST-/ });
-  await ProjectTeamAccess.deleteMany({ organizationId: { $in: [org1Id, foreignOrgId] }, projectId: project._id });
+  await ProjectTeamAccess.deleteMany({ teamId: { $in: prevTestTeamIds } });
 
   // Users in ORG-1
   const adminUser = await User.findOne({ email: 'admin@geonexa.test' }).lean();
@@ -594,10 +595,11 @@ async function runSuite() {
   } finally {
     // Clean up test data
     const endTestTeams = await Team.find({ teamCode: /^TEST-/ }).select('_id').lean();
-    await TeamMember.deleteMany({ $or: [{ teamId: { $in: endTestTeams.map((t) => t._id) } }, { organizationId: { $in: [org1Id, foreignOrgId] } }] });
+    const endTestTeamIds = endTestTeams.map((t) => t._id);
+    await TeamMember.deleteMany({ teamId: { $in: endTestTeamIds } });
     await EmployeeProfile.deleteMany({ organizationId: { $in: [org1Id, foreignOrgId] }, employeeCode: /^TEST-/ });
     await Team.deleteMany({ organizationId: { $in: [org1Id, foreignOrgId] }, teamCode: /^TEST-/ });
-    await ProjectTeamAccess.deleteMany({ organizationId: { $in: [org1Id, foreignOrgId] }, projectId: project._id });
+    await ProjectTeamAccess.deleteMany({ teamId: { $in: endTestTeamIds } });
     await new Promise((resolve) => server.close(resolve));
     await mongoose.disconnect();
   }

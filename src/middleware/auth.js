@@ -3,7 +3,7 @@ import { env } from '../config/env.js';
 import { ApiError } from '../utils/api-error.js';
 import mongoose from 'mongoose';
 import { OrganizationMember, ProjectMember, User, Project } from '../models/index.js';
-import { getUserProjectTeamPermissions } from '../services/workforce-permission.service.js';
+import { getUserProjectTeamPermissions, getEffectiveEmployeePermissions } from '../services/workforce-permission.service.js';
 import { ALL_PERMISSION_KEYS } from '../config/permissions.js';
 
 export async function requireAuth(req, _res, next) {
@@ -121,9 +121,7 @@ export function requireProjectPermission(permissionKey) {
         req.projectAccessMode = project.accessMode || 'ROLE_BASED';
       }
 
-      const accessMode = req.projectAccessMode || 'ROLE_BASED';
-
-      // STEP 2: Administrator override check
+      // STEP 2: Administrator override check (Full Project Access)
       const isAdministrator = req.auth?.organizationRole === 'ADMINISTRATOR' || req.projectRole === 'ADMINISTRATOR';
       if (isAdministrator) {
         req.projectPermissions = Array.from(ALL_PERMISSION_KEYS);
@@ -131,12 +129,7 @@ export function requireProjectPermission(permissionKey) {
         return next();
       }
 
-      // STEP 3: ROLE_BASED Mode check
-      if (accessMode === 'ROLE_BASED') {
-        return next();
-      }
-
-      // STEP 4: TEAM_PERMISSIONS Mode enforcement
+      // STEP 3: Check organization isolation
       if (!project) {
         project = await Project.findById(projectId).select('organizationId accessMode').lean();
         if (!project) throw new ApiError(404, 'Project not found');
@@ -148,14 +141,26 @@ export function requireProjectPermission(permissionKey) {
         throw new ApiError(403, 'Forbidden: Organization access mismatch');
       }
 
-      const teamPerms = await getUserProjectTeamPermissions({
-        organizationId: project.organizationId,
-        projectId,
-        userId: req.auth.userId
-      });
+      const accessMode = req.projectAccessMode || 'ROLE_BASED';
 
-      req.projectPermissions = teamPerms.permissions || [];
-      req.projectTeams = teamPerms.teams || [];
+      // STEP 4: Resolve permissions based on access mode
+      if (accessMode === 'TEAM_PERMISSIONS') {
+        const teamPerms = await getUserProjectTeamPermissions({
+          organizationId: project.organizationId,
+          projectId,
+          userId: req.auth.userId
+        });
+        req.projectPermissions = teamPerms.permissions || [];
+        req.projectTeams = teamPerms.teams || [];
+      } else {
+        // ROLE_BASED mode: Resolve employee effective permissions (from custom permissions or project role preset)
+        const effectivePerms = await getEffectiveEmployeePermissions({
+          organizationId: project.organizationId,
+          projectId,
+          userId: req.auth.userId
+        });
+        req.projectPermissions = effectivePerms.permissions || [];
+      }
 
       const requiredKeys = Array.isArray(permissionKey) ? permissionKey : [permissionKey];
       const hasPermission = requiredKeys.some((k) => req.projectPermissions.includes(k));

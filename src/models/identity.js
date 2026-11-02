@@ -36,6 +36,8 @@ const projectMemberSchema = new Schema({
   projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
   userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
   role: { type: String, enum: ['ADMINISTRATOR', 'ENGINEER', 'OPERATOR', 'VIEWER'], required: true },
+  accessProfile: { type: String, enum: ['ROLE_PRESET', 'CUSTOM', 'ADMINISTRATOR', 'ENGINEER', 'OPERATOR', 'VIEWER'], default: 'ROLE_PRESET' },
+  permissions: { type: [String], default: [] },
   permissionOverrides: { type: [String], default: [] },
   activeFrom: { type: Date, default: Date.now },
   activeTo: Date,

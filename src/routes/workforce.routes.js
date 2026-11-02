@@ -21,10 +21,16 @@ import { audit } from '../services/audit.service.js';
 import {
   PERMISSION_GROUPS,
   ALL_PERMISSIONS,
+  ALL_PERMISSION_KEYS,
   ACCESS_PROFILES,
+  ROLE_PRESETS,
   validatePermissions
 } from '../config/permissions.js';
-import { getUserProjectTeamPermissions, calculateProjectAccessReadiness } from '../services/workforce-permission.service.js';
+import {
+  getUserProjectTeamPermissions,
+  getEffectiveEmployeePermissions,
+  calculateProjectAccessReadiness
+} from '../services/workforce-permission.service.js';
 import {
   createEmployeeInvitation,
   listEmployeeInvitations,
@@ -166,7 +172,8 @@ router.get('/projects/:projectId/access-permissions', asyncHandler(async (req, r
   res.json({
     groups: PERMISSION_GROUPS,
     permissions: ALL_PERMISSIONS,
-    profiles: ACCESS_PROFILES
+    profiles: ACCESS_PROFILES,
+    rolePresets: ROLE_PRESETS
   });
 }));
 
@@ -175,7 +182,8 @@ router.get('/organizations/:organizationId/access-permissions', asyncHandler(asy
   res.json({
     groups: PERMISSION_GROUPS,
     permissions: ALL_PERMISSIONS,
-    profiles: ACCESS_PROFILES
+    profiles: ACCESS_PROFILES,
+    rolePresets: ROLE_PRESETS
   });
 }));
 
@@ -211,20 +219,52 @@ router.get('/organizations/:organizationId/employees', asyncHandler(async (req, 
   const userIds = profiles.map((p) => p.userId);
   const primaryTeamIds = profiles.map((p) => p.primaryTeamId).filter(Boolean);
 
-  const [users, orgMembers, teams] = await Promise.all([
+  const [users, orgMembers, teamMemberships] = await Promise.all([
     User.find({ _id: { $in: userIds } }).select('email displayName status').lean(),
     OrganizationMember.find({ organizationId: req.auth.organizationId, userId: { $in: userIds } }).lean(),
-    Team.find({ organizationId: req.auth.organizationId, _id: { $in: primaryTeamIds } }).select('teamCode name').lean()
+    TeamMember.find({
+      organizationId: req.auth.organizationId,
+      userId: { $in: userIds },
+      status: 'ACTIVE'
+    }).lean()
   ]);
+
+  const memberTeamIds = teamMemberships.map((tm) => tm.teamId);
+  const allTeamIds = Array.from(new Set([...primaryTeamIds.map(String), ...memberTeamIds.map(String)]));
+
+  const teams = await Team.find({
+    organizationId: req.auth.organizationId,
+    _id: { $in: allTeamIds },
+    status: 'ACTIVE'
+  }).select('teamCode name status').lean();
 
   const userMap = new Map(users.map((u) => [u._id.toString(), u]));
   const orgMemberMap = new Map(orgMembers.map((m) => [m.userId.toString(), m]));
   const teamMap = new Map(teams.map((t) => [t._id.toString(), t]));
 
+  // Group active memberships by userId
+  const userTeamMembershipsMap = new Map();
+  for (const tm of teamMemberships) {
+    const uId = tm.userId.toString();
+    const team = teamMap.get(tm.teamId.toString());
+    if (!team) continue;
+    if (!userTeamMembershipsMap.has(uId)) {
+      userTeamMembershipsMap.set(uId, []);
+    }
+    userTeamMembershipsMap.get(uId).push({
+      teamId: tm.teamId.toString(),
+      teamCode: team.teamCode,
+      teamName: team.name,
+      membershipRole: tm.membershipRole || 'MEMBER',
+      status: tm.status
+    });
+  }
+
   const response = profiles.map((p) => {
     const user = userMap.get(p.userId.toString());
     const member = orgMemberMap.get(p.userId.toString());
     const primaryTeam = p.primaryTeamId ? teamMap.get(p.primaryTeamId.toString()) : null;
+    const userTeams = userTeamMembershipsMap.get(p.userId.toString()) || [];
 
     return {
       id: p._id,
@@ -240,8 +280,9 @@ router.get('/organizations/:organizationId/employees', asyncHandler(async (req, 
       userStatus: user?.status,
       organizationRole: member?.organizationRole || 'VIEWER',
       membershipStatus: member?.status || 'ACTIVE',
-      primaryTeamId: p.primaryTeamId,
+      primaryTeamId: p.primaryTeamId || null,
       primaryTeam: primaryTeam ? { id: primaryTeam._id, code: primaryTeam.teamCode, name: primaryTeam.name } : null,
+      teams: userTeams,
       createdAt: p.createdAt,
       updatedAt: p.updatedAt
     };
@@ -1384,32 +1425,400 @@ router.post(
 );
 
 // ============================================================================
+// 5B. INDIVIDUAL EMPLOYEE PROJECT ACCESS
+// ============================================================================
+
+// GET all employee access records for a project
+router.get(
+  '/projects/:projectId/employee-access',
+  requireProjectAccess,
+  requireProjectPermission('administration.view'),
+  asyncHandler(async (req, res) => {
+    const project = await getVerifiedProject(req.params.projectId, req.auth.organizationId);
+
+    const members = await ProjectMember.find({
+      projectId: project._id,
+      status: 'ACTIVE'
+    }).sort({ createdAt: 1 }).lean();
+
+    const userIds = members.map((m) => m.userId);
+
+    const [users, profiles, orgMembers, teamMemberships] = await Promise.all([
+      User.find({ _id: { $in: userIds } }).select('email displayName status').lean(),
+      EmployeeProfile.find({ organizationId: req.auth.organizationId, userId: { $in: userIds } }).lean(),
+      OrganizationMember.find({ organizationId: req.auth.organizationId, userId: { $in: userIds } }).select('userId organizationRole').lean(),
+      TeamMember.find({ organizationId: req.auth.organizationId, userId: { $in: userIds }, status: 'ACTIVE' }).lean()
+    ]);
+
+    const teamIds = teamMemberships.map((tm) => tm.teamId);
+    const teams = await Team.find({ organizationId: req.auth.organizationId, _id: { $in: teamIds }, status: 'ACTIVE' }).select('teamCode name').lean();
+    const teamMap = new Map(teams.map((t) => [t._id.toString(), t]));
+
+    const userTeamMembershipsMap = new Map();
+    for (const tm of teamMemberships) {
+      const uId = tm.userId.toString();
+      const team = teamMap.get(tm.teamId.toString());
+      if (!team) continue;
+      if (!userTeamMembershipsMap.has(uId)) {
+        userTeamMembershipsMap.set(uId, []);
+      }
+      userTeamMembershipsMap.get(uId).push({
+        teamId: tm.teamId.toString(),
+        teamCode: team.teamCode,
+        teamName: team.name,
+        membershipRole: tm.membershipRole || 'MEMBER',
+        status: tm.status
+      });
+    }
+
+    const userMap = new Map(users.map((u) => [u._id.toString(), u]));
+    const profileMap = new Map(profiles.map((p) => [p.userId.toString(), p]));
+    const orgMemberMap = new Map(orgMembers.map((o) => [o.userId.toString(), o]));
+
+    const rows = members.map((m) => {
+      const u = userMap.get(m.userId.toString());
+      const p = profileMap.get(m.userId.toString());
+      const om = orgMemberMap.get(m.userId.toString());
+      const userTeams = userTeamMembershipsMap.get(m.userId.toString()) || [];
+
+      const isAdministrator = om?.organizationRole === 'ADMINISTRATOR' || m.role === 'ADMINISTRATOR';
+
+      let accessProfile = m.accessProfile || 'ROLE_PRESET';
+      let permissions = [];
+
+      if (isAdministrator) {
+        accessProfile = 'ADMINISTRATOR';
+        permissions = Array.from(ALL_PERMISSION_KEYS);
+      } else if (accessProfile === 'ROLE_PRESET' || accessProfile === 'PRESET' || accessProfile === m.role) {
+        accessProfile = 'ROLE_PRESET';
+        permissions = ROLE_PRESETS[m.role] || [];
+      } else if (accessProfile === 'CUSTOM' || (m.permissions?.length > 0) || (m.permissionOverrides?.length > 0)) {
+        accessProfile = 'CUSTOM';
+        permissions = (m.permissions?.length > 0) ? m.permissions : (m.permissionOverrides || []);
+      } else {
+        accessProfile = 'ROLE_PRESET';
+        permissions = ROLE_PRESETS[m.role] || [];
+      }
+
+      return {
+        id: m._id,
+        _id: m._id,
+        projectId: project._id,
+        userId: m.userId,
+        employeeCode: p?.employeeCode || '',
+        displayName: p?.displayName || u?.displayName || 'Unknown',
+        email: u?.email || '',
+        designation: p?.designation || '',
+        department: p?.department || '',
+        role: m.role,
+        accessProfile,
+        permissions,
+        status: m.status,
+        isAdministrator,
+        teams: userTeams,
+        createdAt: m.createdAt,
+        updatedAt: m.updatedAt
+      };
+    });
+
+    res.json(rows);
+  })
+);
+
+// GET single employee access record on a project
+router.get(
+  '/projects/:projectId/employee-access/:userId',
+  requireProjectAccess,
+  requireProjectPermission('administration.view'),
+  asyncHandler(async (req, res) => {
+    const project = await getVerifiedProject(req.params.projectId, req.auth.organizationId);
+    const targetUserId = req.params.userId;
+
+    const [u, p, om, m, teamMemberships] = await Promise.all([
+      User.findById(targetUserId).select('email displayName status').lean(),
+      EmployeeProfile.findOne({ organizationId: req.auth.organizationId, userId: targetUserId }).lean(),
+      OrganizationMember.findOne({ organizationId: req.auth.organizationId, userId: targetUserId }).lean(),
+      ProjectMember.findOne({ projectId: project._id, userId: targetUserId, status: 'ACTIVE' }).lean(),
+      TeamMember.find({ organizationId: req.auth.organizationId, userId: targetUserId, status: 'ACTIVE' }).lean()
+    ]);
+
+    if (!u) throw new ApiError(404, 'User not found');
+
+    const teamIds = teamMemberships.map((tm) => tm.teamId);
+    const teams = await Team.find({ organizationId: req.auth.organizationId, _id: { $in: teamIds }, status: 'ACTIVE' }).select('teamCode name').lean();
+    const teamMap = new Map(teams.map((t) => [t._id.toString(), t]));
+
+    const userTeams = teamMemberships.map((tm) => {
+      const t = teamMap.get(tm.teamId.toString());
+      if (!t) return null;
+      return {
+        teamId: tm.teamId.toString(),
+        teamCode: t.teamCode,
+        teamName: t.name,
+        membershipRole: tm.membershipRole || 'MEMBER',
+        status: tm.status
+      };
+    }).filter(Boolean);
+
+    const role = m?.role || om?.organizationRole || 'ENGINEER';
+    const isAdministrator = om?.organizationRole === 'ADMINISTRATOR' || role === 'ADMINISTRATOR';
+
+    let accessProfile = m?.accessProfile || 'ROLE_PRESET';
+    let permissions = [];
+
+    if (isAdministrator) {
+      accessProfile = 'ADMINISTRATOR';
+      permissions = Array.from(ALL_PERMISSION_KEYS);
+    } else if (accessProfile === 'ROLE_PRESET' || accessProfile === 'PRESET' || accessProfile === role) {
+      accessProfile = 'ROLE_PRESET';
+      permissions = ROLE_PRESETS[role] || [];
+    } else if (accessProfile === 'CUSTOM' || (m?.permissions?.length > 0) || (m?.permissionOverrides?.length > 0)) {
+      accessProfile = 'CUSTOM';
+      permissions = (m?.permissions?.length > 0) ? m.permissions : (m?.permissionOverrides || []);
+    } else {
+      accessProfile = 'ROLE_PRESET';
+      permissions = ROLE_PRESETS[role] || [];
+    }
+
+    res.json({
+      id: m?._id || null,
+      _id: m?._id || null,
+      projectId: project._id,
+      userId: targetUserId,
+      employeeCode: p?.employeeCode || '',
+      displayName: p?.displayName || u.displayName || 'Unknown',
+      email: u.email,
+      designation: p?.designation || '',
+      department: p?.department || '',
+      role,
+      accessProfile,
+      permissions,
+      status: m?.status || 'ACTIVE',
+      isAdministrator,
+      teams: userTeams,
+      createdAt: m?.createdAt,
+      updatedAt: m?.updatedAt
+    });
+  })
+);
+
+// PATCH update single employee access (role, accessProfile, permissions)
+router.patch(
+  '/projects/:projectId/employee-access/:userId',
+  requireProjectAccess,
+  requireProjectPermission('administration.manageAccess'),
+  asyncHandler(async (req, res) => {
+    const project = await getVerifiedProject(req.params.projectId, req.auth.organizationId);
+    const targetUserId = req.params.userId;
+
+    const schema = z.object({
+      role: z.enum(['ADMINISTRATOR', 'ENGINEER', 'OPERATOR', 'VIEWER']).optional(),
+      accessProfile: z.enum(['ROLE_PRESET', 'CUSTOM', 'ADMINISTRATOR', 'ENGINEER', 'OPERATOR', 'VIEWER']).optional(),
+      permissions: z.array(z.string()).optional()
+    });
+
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new ApiError(400, `Invalid employee access payload: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
+    }
+
+    const { role: newRole, accessProfile: newProfile, permissions: newPermissions } = parsed.data;
+
+    let member = await ProjectMember.findOne({
+      projectId: project._id,
+      userId: targetUserId
+    });
+
+    const [u, p, om] = await Promise.all([
+      User.findById(targetUserId).select('email displayName').lean(),
+      EmployeeProfile.findOne({ organizationId: req.auth.organizationId, userId: targetUserId }).lean(),
+      OrganizationMember.findOne({ organizationId: req.auth.organizationId, userId: targetUserId }).lean()
+    ]);
+
+    if (!u) throw new ApiError(404, 'User not found');
+
+    const previousRole = member?.role || om?.organizationRole || 'ENGINEER';
+    const effectiveRole = newRole || previousRole;
+
+    // Protection against removing or demoting the final Project Administrator
+    if (previousRole === 'ADMINISTRATOR' && effectiveRole !== 'ADMINISTRATOR') {
+      const otherAdminCount = await ProjectMember.countDocuments({
+        projectId: project._id,
+        role: 'ADMINISTRATOR',
+        status: 'ACTIVE',
+        userId: { $ne: targetUserId }
+      });
+      if (otherAdminCount === 0) {
+        throw new ApiError(400, 'Cannot demote or remove the final Project Administrator');
+      }
+    }
+
+    if (!member) {
+      member = new ProjectMember({
+        projectId: project._id,
+        userId: targetUserId,
+        role: effectiveRole,
+        status: 'ACTIVE'
+      });
+    } else {
+      member.role = effectiveRole;
+      member.status = 'ACTIVE';
+    }
+
+    let finalProfile = newProfile || member.accessProfile || 'ROLE_PRESET';
+    let finalPermissions = [];
+
+    // Compare newPermissions with role preset to automatically return to ROLE_PRESET if matched
+    const presetPerms = (ROLE_PRESETS[effectiveRole] || []).slice().sort();
+    const sortedNewPerms = Array.isArray(newPermissions) ? [...newPermissions].sort() : null;
+    const matchesPreset = sortedNewPerms && sortedNewPerms.length === presetPerms.length && sortedNewPerms.every((k, idx) => k === presetPerms[idx]);
+
+    if (effectiveRole === 'ADMINISTRATOR') {
+      finalProfile = 'ADMINISTRATOR';
+      finalPermissions = Array.from(ALL_PERMISSION_KEYS);
+      member.permissions = [];
+      member.permissionOverrides = [];
+    } else if (newProfile === 'ROLE_PRESET' || newProfile === 'PRESET' || matchesPreset) {
+      finalProfile = 'ROLE_PRESET';
+      finalPermissions = ROLE_PRESETS[effectiveRole] || [];
+      member.permissions = [];
+      member.permissionOverrides = [];
+    } else if (finalProfile === 'CUSTOM') {
+      if (Array.isArray(newPermissions)) {
+        const val = validatePermissions(newPermissions);
+        if (!val.valid) {
+          throw new ApiError(400, `Invalid permission keys: ${val.invalid.join(', ')}`);
+        }
+        finalPermissions = newPermissions;
+      } else {
+        finalPermissions = (member.permissions?.length > 0) ? member.permissions : (ROLE_PRESETS[effectiveRole] || []);
+      }
+      member.permissions = finalPermissions;
+      member.permissionOverrides = finalPermissions;
+    } else {
+      // ROLE_PRESET fallback
+      finalProfile = 'ROLE_PRESET';
+      finalPermissions = ROLE_PRESETS[effectiveRole] || [];
+      member.permissions = [];
+      member.permissionOverrides = [];
+    }
+
+    member.accessProfile = finalProfile;
+    await member.save();
+
+    await audit({
+      req,
+      organizationId: req.auth.organizationId,
+      projectId: project._id,
+      action: 'EMPLOYEE_PROJECT_ACCESS_UPDATED',
+      resourceType: 'ProjectMember',
+      resourceId: member._id,
+      newState: {
+        userId: targetUserId,
+        role: effectiveRole,
+        accessProfile: finalProfile,
+        permissionsCount: finalPermissions.length
+      }
+    });
+
+    const patchTeamMemberships = await TeamMember.find({
+      organizationId: req.auth.organizationId,
+      userId: targetUserId,
+      status: 'ACTIVE'
+    }).lean();
+    const patchTeamIds = patchTeamMemberships.map((tm) => tm.teamId);
+    const patchTeams = await Team.find({
+      organizationId: req.auth.organizationId,
+      _id: { $in: patchTeamIds },
+      status: 'ACTIVE'
+    }).select('teamCode name').lean();
+    const patchTeamMap = new Map(patchTeams.map((t) => [t._id.toString(), t]));
+    const patchUserTeams = patchTeamMemberships.map((tm) => {
+      const t = patchTeamMap.get(tm.teamId.toString());
+      if (!t) return null;
+      return {
+        teamId: tm.teamId.toString(),
+        teamCode: t.teamCode,
+        teamName: t.name,
+        membershipRole: tm.membershipRole || 'MEMBER',
+        status: tm.status
+      };
+    }).filter(Boolean);
+
+    res.json({
+      id: member._id,
+      _id: member._id,
+      projectId: project._id,
+      userId: targetUserId,
+      employeeCode: p?.employeeCode || '',
+      displayName: p?.displayName || u.displayName || 'Unknown',
+      email: u.email,
+      designation: p?.designation || '',
+      department: p?.department || '',
+      role: effectiveRole,
+      accessProfile: finalProfile,
+      permissions: finalPermissions,
+      status: member.status,
+      isAdministrator: effectiveRole === 'ADMINISTRATOR' || om?.organizationRole === 'ADMINISTRATOR',
+      teams: patchUserTeams,
+      updatedAt: member.updatedAt
+    });
+  })
+);
+
+// ============================================================================
 // 6. EFFECTIVE PERMISSIONS RESOLUTION ENDPOINT
 // ============================================================================
 
 router.get('/projects/:projectId/effective-permissions', asyncHandler(async (req, res) => {
   const project = await getVerifiedProject(req.params.projectId, req.auth.organizationId);
-  const result = await getUserProjectTeamPermissions({
+  const effectiveEmployee = await getEffectiveEmployeePermissions({
     organizationId: req.auth.organizationId,
     projectId: project._id,
     userId: req.auth.userId
   });
+  const teamPerms = await getUserProjectTeamPermissions({
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    userId: req.auth.userId
+  });
+
   res.json({
-    ...result,
-    accessMode: project.accessMode || 'ROLE_BASED'
+    organizationId: req.auth.organizationId.toString(),
+    projectId: project._id.toString(),
+    userId: req.auth.userId.toString(),
+    isAdministrator: effectiveEmployee.isAdministrator,
+    role: effectiveEmployee.role,
+    accessProfile: effectiveEmployee.accessProfile,
+    accessMode: project.accessMode || 'ROLE_BASED',
+    teams: teamPerms.teams || [],
+    permissions: (project.accessMode === 'TEAM_PERMISSIONS' && !effectiveEmployee.isAdministrator) ? teamPerms.permissions : effectiveEmployee.permissions
   });
 }));
 
 router.get('/projects/:projectId/effective-permissions/:userId', asyncHandler(async (req, res) => {
   const project = await getVerifiedProject(req.params.projectId, req.auth.organizationId);
-  const result = await getUserProjectTeamPermissions({
+  const effectiveEmployee = await getEffectiveEmployeePermissions({
     organizationId: req.auth.organizationId,
     projectId: project._id,
     userId: req.params.userId
   });
+  const teamPerms = await getUserProjectTeamPermissions({
+    organizationId: req.auth.organizationId,
+    projectId: project._id,
+    userId: req.params.userId
+  });
+
   res.json({
-    ...result,
-    accessMode: project.accessMode || 'ROLE_BASED'
+    organizationId: req.auth.organizationId.toString(),
+    projectId: project._id.toString(),
+    userId: req.params.userId.toString(),
+    isAdministrator: effectiveEmployee.isAdministrator,
+    role: effectiveEmployee.role,
+    accessProfile: effectiveEmployee.accessProfile,
+    accessMode: project.accessMode || 'ROLE_BASED',
+    teams: teamPerms.teams || [],
+    permissions: (project.accessMode === 'TEAM_PERMISSIONS' && !effectiveEmployee.isAdministrator) ? teamPerms.permissions : effectiveEmployee.permissions
   });
 }));
 

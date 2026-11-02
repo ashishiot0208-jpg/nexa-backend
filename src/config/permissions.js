@@ -247,6 +247,64 @@ export const ACCESS_PROFILES = {
 };
 
 /**
+ * Canonical Project Role Permission Presets
+ * ROLE = default permission preset
+ * EMPLOYEE ACCESS = actual permissions for that individual employee
+ */
+export const ROLE_PRESETS = {
+  ADMINISTRATOR: Array.from(ALL_PERMISSION_KEYS),
+  ENGINEER: [
+    'overview.view',
+    'map.view',
+    'instruments.view',
+    'historical.view',
+    'historical.export',
+    'trends.view',
+    'trends.export',
+    'commissioning.view',
+    'devices.view',
+    'severityRules.view',
+    'severityRules.configure',
+    'alarmPolicies.view',
+    'alarms.view',
+    'alarms.acknowledge',
+    'investigations.view',
+    'investigations.start',
+    'investigations.addFinding',
+    'investigations.complete',
+    'reports.view',
+    'reports.export'
+  ],
+  OPERATOR: [
+    'overview.view',
+    'map.view',
+    'instruments.view',
+    'historical.view',
+    'trends.view',
+    'commissioning.view',
+    'devices.view',
+    'alarms.view',
+    'alarms.acknowledge',
+    'investigations.view',
+    'investigations.start',
+    'investigations.addFinding',
+    'reports.view'
+  ],
+  VIEWER: [
+    'overview.view',
+    'map.view',
+    'instruments.view',
+    'historical.view',
+    'historical.export',
+    'trends.view',
+    'trends.export',
+    'alarms.view',
+    'investigations.view',
+    'reports.view'
+  ]
+};
+
+/**
  * Validate that an array of permission keys contains only valid catalog entries.
  * Returns { valid: boolean, invalid: string[] }
  */
@@ -260,3 +318,4 @@ export function validatePermissions(permissions) {
     invalid
   };
 }
+
