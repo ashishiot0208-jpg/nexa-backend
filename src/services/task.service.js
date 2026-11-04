@@ -18,7 +18,11 @@ import {
   Site
 } from '../models/index.js';
 import { ApiError } from '../utils/api-error.js';
-import { notifyTaskCompleted } from './notification.service.js';
+import {
+  notifyTaskCompleted,
+  notifyTaskAssigned,
+  notifyTaskReassigned
+} from './notification.service.js';
 
 /**
  * Record an audit event for a task
@@ -241,586 +245,632 @@ export async function createTask({
   });
 
   if (assignedTeamId || assignedUserId) {
-    await recordTaskEvent({
-      taskId: task._id,
-      organizationId,
-      projectId,
-      eventType: 'ASSIGNED',
-      actor,
-      newValue: {
-        team: assignedTeamSnapshot?.teamName || null,
-        user: assignedUserSnapshot?.displayName || null
-      },
-      comment: 'Initial assignment upon task creation'
-    });
-  }
+      const assignEvent = await recordTaskEvent({
+        taskId: task._id,
+        organizationId,
+        projectId,
+        eventType: 'ASSIGNED',
+        actor,
+        newValue: {
+          team: assignedTeamSnapshot?.teamName || null,
+          user: assignedUserSnapshot?.displayName || null
+        },
+        comment: 'Initial assignment upon task creation'
+      });
+
+      if(assignedUserId) {
+        try {
+          await notifyTaskAssigned({
+            task,
+            eventId: assignEvent?._id,
+            actor
+          });
+        } catch (err) {
+          console.error('[TaskService] Failed to notify assigned employee upon creation:', err);
+        }
+      }
+    }
 
   return task;
-}
-
-/**
- * List Tasks for a project with optional filters and counters
- */
-export async function listTasks({
-  organizationId,
-  projectId,
-  status,
-  priority,
-  assignedTeamId,
-  assignedUserId,
-  myTasksUserId,
-  relatedObjectType,
-  dueState,
-  search,
-  limit = 100,
-  skip = 0
-}) {
-  if (!organizationId || !projectId) {
-    throw new ApiError(400, 'organizationId and projectId are required');
   }
 
-  const query = {
-    organizationId: new mongoose.Types.ObjectId(organizationId),
-    projectId: new mongoose.Types.ObjectId(projectId)
-  };
+  /**
+   * List Tasks for a project with optional filters and counters
+   */
+  export async function listTasks({
+    organizationId,
+    projectId,
+    status,
+    priority,
+    assignedTeamId,
+    assignedUserId,
+    myTasksUserId,
+    relatedObjectType,
+    dueState,
+    search,
+    limit = 100,
+    skip = 0
+  }) {
+    if (!organizationId || !projectId) {
+      throw new ApiError(400, 'organizationId and projectId are required');
+    }
 
-  if (status) {
-    query.status = status;
-  }
-
-  if (priority) {
-    query.priority = priority;
-  }
-
-  if (assignedTeamId) {
-    query.assignedTeamId = new mongoose.Types.ObjectId(assignedTeamId);
-  }
-
-  if (assignedUserId) {
-    query.assignedUserId = new mongoose.Types.ObjectId(assignedUserId);
-  }
-
-  if (myTasksUserId) {
-    // Exact individual assignment only (Team-only tasks are NOT automatically personal tasks)
-    query.assignedUserId = new mongoose.Types.ObjectId(myTasksUserId);
-  }
-
-  if (relatedObjectType && relatedObjectType !== 'ALL') {
-    query.relatedObjectType = relatedObjectType;
-  }
-
-  const now = new Date();
-  if (dueState === 'OVERDUE') {
-    query.status = { $in: ['OPEN', 'IN_PROGRESS'] };
-    query.dueDate = { $lt: now };
-  }
-
-  if (search && search.trim()) {
-    const s = search.trim();
-    query.$or = [
-      { taskCode: { $regex: s, $options: 'i' } },
-      { title: { $regex: s, $options: 'i' } },
-      { description: { $regex: s, $options: 'i' } }
-    ];
-  }
-
-  const [tasks, totalCount, openCount, inProgressCount, completedCount, overdueCount] = await Promise.all([
-    Task.find(query)
-      .sort({ createdAt: -1 })
-      .skip(Number(skip))
-      .limit(Number(limit))
-      .lean(),
-    Task.countDocuments(query),
-    Task.countDocuments({ organizationId, projectId, status: 'OPEN' }),
-    Task.countDocuments({ organizationId, projectId, status: 'IN_PROGRESS' }),
-    Task.countDocuments({ organizationId, projectId, status: 'COMPLETED' }),
-    Task.countDocuments({
-      organizationId,
-      projectId,
-      status: { $in: ['OPEN', 'IN_PROGRESS'] },
-      dueDate: { $lt: now }
-    })
-  ]);
-
-  // Derived overdue flag for each row
-  const formattedTasks = tasks.map((t) => {
-    const isOverdue = (t.status === 'OPEN' || t.status === 'IN_PROGRESS') && t.dueDate && new Date(t.dueDate) < now;
-    return {
-      ...t,
-      isOverdue: Boolean(isOverdue)
+    const query = {
+      organizationId: new mongoose.Types.ObjectId(organizationId),
+      projectId: new mongoose.Types.ObjectId(projectId)
     };
-  });
 
-  return {
-    tasks: formattedTasks,
-    totalCount,
-    counters: {
-      open: openCount,
-      inProgress: inProgressCount,
-      completed: completedCount,
-      overdue: overdueCount,
-      activeTotal: openCount + inProgressCount
+    if (status) {
+      query.status = status;
     }
-  };
-}
 
-/**
- * Get Task details by ID including updates and audit events
- */
-export async function getTask({ organizationId, projectId, taskId }) {
-  if (!organizationId || !projectId || !taskId) {
-    throw new ApiError(400, 'organizationId, projectId and taskId are required');
-  }
+    if (priority) {
+      query.priority = priority;
+    }
 
-  const task = await Task.findOne({ _id: taskId, organizationId, projectId }).lean();
-  if (!task) {
-    throw new ApiError(404, 'Task not found');
-  }
+    if (assignedTeamId) {
+      query.assignedTeamId = new mongoose.Types.ObjectId(assignedTeamId);
+    }
 
-  const [updates, events] = await Promise.all([
-    TaskUpdate.find({ taskId, organizationId, projectId }).sort({ createdAt: 1 }).lean(),
-    TaskEvent.find({ taskId, organizationId, projectId }).sort({ createdAt: -1 }).lean()
-  ]);
+    if (assignedUserId) {
+      query.assignedUserId = new mongoose.Types.ObjectId(assignedUserId);
+    }
 
-  const now = new Date();
-  const isOverdue = (task.status === 'OPEN' || task.status === 'IN_PROGRESS') && task.dueDate && new Date(task.dueDate) < now;
+    if (myTasksUserId) {
+      // Exact individual assignment only (Team-only tasks are NOT automatically personal tasks)
+      query.assignedUserId = new mongoose.Types.ObjectId(myTasksUserId);
+    }
 
-  return {
-    ...task,
-    isOverdue: Boolean(isOverdue),
-    updates,
-    events
-  };
-}
+    if (relatedObjectType && relatedObjectType !== 'ALL') {
+      query.relatedObjectType = relatedObjectType;
+    }
 
-/**
- * Assign / Reassign a Task
- */
-export async function assignTask({
-  organizationId,
-  projectId,
-  taskId,
-  assignedTeamId = null,
-  assignedUserId = null,
-  actor
-}) {
-  const task = await Task.findOne({ _id: taskId, organizationId, projectId });
-  if (!task) {
-    throw new ApiError(404, 'Task not found');
-  }
+    const now = new Date();
+    if (dueState === 'OVERDUE') {
+      query.status = { $in: ['OPEN', 'IN_PROGRESS'] };
+      query.dueDate = { $lt: now };
+    }
 
-  if (task.status === 'COMPLETED' || task.status === 'CANCELLED') {
-    throw new ApiError(400, `Cannot reassign a ${task.status.toLowerCase()} task`);
-  }
+    if (search && search.trim()) {
+      const s = search.trim();
+      query.$or = [
+        { taskCode: { $regex: s, $options: 'i' } },
+        { title: { $regex: s, $options: 'i' } },
+        { description: { $regex: s, $options: 'i' } }
+      ];
+    }
 
-  // If both assignedTeamId and assignedUserId are supplied, employee must be an ACTIVE member of team
-  if (assignedTeamId && assignedUserId) {
-    const membership = await TeamMember.findOne({
-      organizationId,
-      teamId: assignedTeamId,
-      userId: assignedUserId,
-      status: 'ACTIVE'
+    const [tasks, totalCount, openCount, inProgressCount, completedCount, overdueCount] = await Promise.all([
+      Task.find(query)
+        .sort({ createdAt: -1 })
+        .skip(Number(skip))
+        .limit(Number(limit))
+        .lean(),
+      Task.countDocuments(query),
+      Task.countDocuments({ organizationId, projectId, status: 'OPEN' }),
+      Task.countDocuments({ organizationId, projectId, status: 'IN_PROGRESS' }),
+      Task.countDocuments({ organizationId, projectId, status: 'COMPLETED' }),
+      Task.countDocuments({
+        organizationId,
+        projectId,
+        status: { $in: ['OPEN', 'IN_PROGRESS'] },
+        dueDate: { $lt: now }
+      })
+    ]);
+
+    // Derived overdue flag for each row
+    const formattedTasks = tasks.map((t) => {
+      const isOverdue = (t.status === 'OPEN' || t.status === 'IN_PROGRESS') && t.dueDate && new Date(t.dueDate) < now;
+      return {
+        ...t,
+        isOverdue: Boolean(isOverdue)
+      };
     });
-    if (!membership) {
-      throw new ApiError(400, 'Selected employee is not an active member of the assigned team.');
+
+    return {
+      tasks: formattedTasks,
+      totalCount,
+      counters: {
+        open: openCount,
+        inProgress: inProgressCount,
+        completed: completedCount,
+        overdue: overdueCount,
+        activeTotal: openCount + inProgressCount
+      }
+    };
+  }
+
+  /**
+   * Get Task details by ID including updates and audit events
+   */
+  export async function getTask({ organizationId, projectId, taskId }) {
+    if (!organizationId || !projectId || !taskId) {
+      throw new ApiError(400, 'organizationId, projectId and taskId are required');
     }
+
+    const task = await Task.findOne({ _id: taskId, organizationId, projectId }).lean();
+    if (!task) {
+      throw new ApiError(404, 'Task not found');
+    }
+
+    const [updates, events] = await Promise.all([
+      TaskUpdate.find({ taskId, organizationId, projectId }).sort({ createdAt: 1 }).lean(),
+      TaskEvent.find({ taskId, organizationId, projectId }).sort({ createdAt: -1 }).lean()
+    ]);
+
+    const now = new Date();
+    const isOverdue = (task.status === 'OPEN' || task.status === 'IN_PROGRESS') && task.dueDate && new Date(task.dueDate) < now;
+
+    return {
+      ...task,
+      isOverdue: Boolean(isOverdue),
+      updates,
+      events
+    };
   }
 
-  const previousAssignment = {
-    team: task.assignedTeamSnapshot?.teamName || null,
-    user: task.assignedUserSnapshot?.displayName || null
-  };
-
-  const [assignedTeamSnapshot, assignedUserSnapshot] = await Promise.all([
-    buildTeamSnapshot(assignedTeamId, organizationId),
-    buildUserSnapshot(assignedUserId, organizationId, projectId)
-  ]);
-
-  task.assignedTeamId = assignedTeamId || null;
-  task.assignedTeamSnapshot = assignedTeamSnapshot;
-  task.assignedUserId = assignedUserId || null;
-  task.assignedUserSnapshot = assignedUserSnapshot;
-  task.assignedAt = (assignedTeamId || assignedUserId) ? new Date() : null;
-
-  await task.save();
-
-  const newAssignment = {
-    team: assignedTeamSnapshot?.teamName || null,
-    user: assignedUserSnapshot?.displayName || null
-  };
-
-  const isUnassign = !assignedTeamId && !assignedUserId;
-  const isReassign = (previousAssignment.team || previousAssignment.user) && !isUnassign;
-  const eventType = isUnassign ? 'UNASSIGNED' : isReassign ? 'REASSIGNED' : 'ASSIGNED';
-
-  await recordTaskEvent({
-    taskId: task._id,
+  /**
+   * Assign / Reassign a Task
+   */
+  export async function assignTask({
     organizationId,
     projectId,
-    eventType,
-    actor,
-    previousValue: previousAssignment,
-    newValue: newAssignment,
-    comment: isUnassign ? 'Task unassigned' : `Task assigned to ${newAssignment.user || newAssignment.team || 'unassigned'}`
-  });
+    taskId,
+    assignedTeamId = null,
+    assignedUserId = null,
+    actor
+  }) {
+    const task = await Task.findOne({ _id: taskId, organizationId, projectId });
+    if (!task) {
+      throw new ApiError(404, 'Task not found');
+    }
 
-  return task;
-}
+    if (task.status === 'COMPLETED' || task.status === 'CANCELLED') {
+      throw new ApiError(400, `Cannot reassign a ${task.status.toLowerCase()} task`);
+    }
 
-/**
- * Start a Task (OPEN -> IN_PROGRESS)
- */
-export async function startTask({ organizationId, projectId, taskId, actor }) {
-  const task = await Task.findOne({ _id: taskId, organizationId, projectId });
-  if (!task) {
-    throw new ApiError(404, 'Task not found');
+    // If both assignedTeamId and assignedUserId are supplied, employee must be an ACTIVE member of team
+    if (assignedTeamId && assignedUserId) {
+      const membership = await TeamMember.findOne({
+        organizationId,
+        teamId: assignedTeamId,
+        userId: assignedUserId,
+        status: 'ACTIVE'
+      });
+      if (!membership) {
+        throw new ApiError(400, 'Selected employee is not an active member of the assigned team.');
+      }
+    }
+
+    const previousAssignment = {
+      team: task.assignedTeamSnapshot?.teamName || null,
+      user: task.assignedUserSnapshot?.displayName || null
+    };
+    const prevUserId = task.assignedUserId ? task.assignedUserId.toString() : null;
+    const newUserId = assignedUserId ? assignedUserId.toString() : null;
+
+    const [assignedTeamSnapshot, assignedUserSnapshot] = await Promise.all([
+      buildTeamSnapshot(assignedTeamId, organizationId),
+      buildUserSnapshot(assignedUserId, organizationId, projectId)
+    ]);
+
+    task.assignedTeamId = assignedTeamId || null;
+    task.assignedTeamSnapshot = assignedTeamSnapshot;
+    task.assignedUserId = assignedUserId || null;
+    task.assignedUserSnapshot = assignedUserSnapshot;
+    task.assignedAt = (assignedTeamId || assignedUserId) ? new Date() : null;
+
+    await task.save();
+
+    const newAssignment = {
+      team: assignedTeamSnapshot?.teamName || null,
+      user: assignedUserSnapshot?.displayName || null
+    };
+
+    const isUnassign = !assignedTeamId && !assignedUserId;
+    const isReassign = (previousAssignment.team || previousAssignment.user) && !isUnassign;
+    const eventType = isUnassign ? 'UNASSIGNED' : isReassign ? 'REASSIGNED' : 'ASSIGNED';
+
+      const assignEvent = await recordTaskEvent({
+        taskId: task._id,
+        organizationId,
+        projectId,
+        eventType,
+        actor,
+        previousValue: previousAssignment,
+        newValue: newAssignment,
+        comment: isUnassign ? 'Task unassigned' : `Task assigned to ${newAssignment.user || newAssignment.team || 'unassigned'}`
+      });
+
+      // Employee Notification Trigger (Phase 2)
+      if(newUserId && prevUserId !== newUserId) {
+      try {
+        let isEmployeeReassigned = Boolean(prevUserId);
+        if (!isEmployeeReassigned) {
+          const hadPriorUserAssignee = await TaskEvent.exists({
+            taskId: task._id,
+            _id: { $ne: assignEvent?._id },
+            eventType: { $in: ['ASSIGNED', 'REASSIGNED'] },
+            'newValue.user': { $ne: null }
+          });
+          isEmployeeReassigned = Boolean(hadPriorUserAssignee);
+        }
+
+        if (isEmployeeReassigned) {
+          await notifyTaskReassigned({
+            task,
+            eventId: assignEvent?._id,
+            actor
+          });
+        } else {
+          await notifyTaskAssigned({
+            task,
+            eventId: assignEvent?._id,
+            actor
+          });
+        }
+      } catch (notifErr) {
+        console.error('[TaskService] Notification trigger error in assignTask:', notifErr);
+      }
+    }
+
+    return task;
   }
 
-  if (task.status !== 'OPEN') {
-    throw new ApiError(400, `Cannot start task with status ${task.status}. Task must be OPEN to start.`);
-  }
+  /**
+   * Start a Task (OPEN -> IN_PROGRESS)
+   */
+  export async function startTask({ organizationId, projectId, taskId, actor }) {
+    const task = await Task.findOne({ _id: taskId, organizationId, projectId });
+    if (!task) {
+      throw new ApiError(404, 'Task not found');
+    }
 
-  task.status = 'IN_PROGRESS';
-  task.startedAt = new Date();
-  task.startedByUserId = actor?.userId || null;
+    if (task.status !== 'OPEN') {
+      throw new ApiError(400, `Cannot start task with status ${task.status}. Task must be OPEN to start.`);
+    }
 
-  await task.save();
+    task.status = 'IN_PROGRESS';
+    task.startedAt = new Date();
+    task.startedByUserId = actor?.userId || null;
 
-  await recordTaskEvent({
-    taskId: task._id,
-    organizationId,
-    projectId,
-    eventType: 'STARTED',
-    actor,
-    previousValue: { status: 'OPEN' },
-    newValue: { status: 'IN_PROGRESS', startedAt: task.startedAt },
-    comment: 'Task started and transitioned to IN_PROGRESS'
-  });
+    await task.save();
 
-  return task;
-}
-
-/**
- * Update Task fields (title, description, priority, dueDate)
- */
-export async function updateTask({
-  organizationId,
-  projectId,
-  taskId,
-  data = {},
-  actor
-}) {
-  const task = await Task.findOne({ _id: taskId, organizationId, projectId });
-  if (!task) {
-    throw new ApiError(404, 'Task not found');
-  }
-
-  if (task.status === 'COMPLETED' || task.status === 'CANCELLED') {
-    throw new ApiError(400, `Cannot edit fields on a ${task.status.toLowerCase()} task`);
-  }
-
-  const { title, description, priority, dueDate } = data;
-
-  if (priority && priority !== task.priority) {
     await recordTaskEvent({
       taskId: task._id,
       organizationId,
       projectId,
-      eventType: 'PRIORITY_CHANGED',
+      eventType: 'STARTED',
       actor,
-      previousValue: task.priority,
-      newValue: priority,
-      comment: `Priority changed from ${task.priority} to ${priority}`
+      previousValue: { status: 'OPEN' },
+      newValue: { status: 'IN_PROGRESS', startedAt: task.startedAt },
+      comment: 'Task started and transitioned to IN_PROGRESS'
     });
-    task.priority = priority;
+
+    return task;
   }
 
-  if (dueDate !== undefined) {
-    const newDueDate = dueDate ? new Date(dueDate) : null;
-    const prevDueDate = task.dueDate;
-    if (String(prevDueDate) !== String(newDueDate)) {
+  /**
+   * Update Task fields (title, description, priority, dueDate)
+   */
+  export async function updateTask({
+    organizationId,
+    projectId,
+    taskId,
+    data = {},
+    actor
+  }) {
+    const task = await Task.findOne({ _id: taskId, organizationId, projectId });
+    if (!task) {
+      throw new ApiError(404, 'Task not found');
+    }
+
+    if (task.status === 'COMPLETED' || task.status === 'CANCELLED') {
+      throw new ApiError(400, `Cannot edit fields on a ${task.status.toLowerCase()} task`);
+    }
+
+    const { title, description, priority, dueDate } = data;
+
+    if (priority && priority !== task.priority) {
       await recordTaskEvent({
         taskId: task._id,
         organizationId,
         projectId,
-        eventType: 'DUE_DATE_CHANGED',
+        eventType: 'PRIORITY_CHANGED',
         actor,
-        previousValue: prevDueDate,
-        newValue: newDueDate,
-        comment: `Due date changed`
+        previousValue: task.priority,
+        newValue: priority,
+        comment: `Priority changed from ${task.priority} to ${priority}`
       });
-      task.dueDate = newDueDate;
+      task.priority = priority;
     }
+
+    if (dueDate !== undefined) {
+      const newDueDate = dueDate ? new Date(dueDate) : null;
+      const prevDueDate = task.dueDate;
+      if (String(prevDueDate) !== String(newDueDate)) {
+        await recordTaskEvent({
+          taskId: task._id,
+          organizationId,
+          projectId,
+          eventType: 'DUE_DATE_CHANGED',
+          actor,
+          previousValue: prevDueDate,
+          newValue: newDueDate,
+          comment: `Due date changed`
+        });
+        task.dueDate = newDueDate;
+      }
+    }
+
+    if (title && title.trim()) {
+      task.title = title.trim();
+    }
+    if (description !== undefined) {
+      task.description = description.trim();
+    }
+
+    await task.save();
+    return task;
   }
 
-  if (title && title.trim()) {
-    task.title = title.trim();
-  }
-  if (description !== undefined) {
-    task.description = description.trim();
-  }
-
-  await task.save();
-  return task;
-}
-
-/**
- * Add a lightweight progress update or comment to a task
- */
-export async function addTaskUpdate({
-  organizationId,
-  projectId,
-  taskId,
-  message,
-  updateType = 'COMMENT',
-  actor
-}) {
-  if (!message || !message.trim()) {
-    throw new ApiError(400, 'Update message is required');
-  }
-
-  const task = await Task.findOne({ _id: taskId, organizationId, projectId });
-  if (!task) {
-    throw new ApiError(404, 'Task not found');
-  }
-
-  if (task.status === 'COMPLETED' || task.status === 'CANCELLED') {
-    throw new ApiError(400, `Cannot add updates to a ${task.status.toLowerCase()} task`);
-  }
-
-  const userProfile = actor?.userId ? await EmployeeProfile.findOne({
-    organizationId,
-    userId: actor.userId,
-    status: 'ACTIVE'
-  }).select('displayName employeeCode').lean() : null;
-
-  const update = await TaskUpdate.create({
-    taskId: task._id,
+  /**
+   * Add a lightweight progress update or comment to a task
+   */
+  export async function addTaskUpdate({
     organizationId,
     projectId,
-    userId: actor.userId,
-    userSnapshot: {
+    taskId,
+    message,
+    updateType = 'COMMENT',
+    actor
+  }) {
+    if (!message || !message.trim()) {
+      throw new ApiError(400, 'Update message is required');
+    }
+
+    const task = await Task.findOne({ _id: taskId, organizationId, projectId });
+    if (!task) {
+      throw new ApiError(404, 'Task not found');
+    }
+
+    if (task.status === 'COMPLETED' || task.status === 'CANCELLED') {
+      throw new ApiError(400, `Cannot add updates to a ${task.status.toLowerCase()} task`);
+    }
+
+    const userProfile = actor?.userId ? await EmployeeProfile.findOne({
+      organizationId,
       userId: actor.userId,
-      displayName: userProfile?.displayName || actor.displayName || actor.name || actor.email || 'User',
-      email: actor.email || '',
-      employeeCode: userProfile?.employeeCode || null
-    },
-    message: message.trim(),
-    updateType: updateType || 'COMMENT'
-  });
-
-  await recordTaskEvent({
-    taskId: task._id,
-    organizationId,
-    projectId,
-    eventType: 'UPDATED',
-    actor,
-    newValue: { message: message.trim(), updateType: update.updateType },
-    comment: `Added update: ${message.trim().slice(0, 100)}`
-  });
-
-  return update;
-}
-
-/**
- * Complete a Task (IN_PROGRESS -> COMPLETED)
- */
-export async function completeTask({
-  organizationId,
-  projectId,
-  taskId,
-  completionNote,
-  actor
-}) {
-  const task = await Task.findOne({ _id: taskId, organizationId, projectId });
-  if (!task) {
-    throw new ApiError(404, 'Task not found');
-  }
-
-  if (task.status !== 'IN_PROGRESS') {
-    throw new ApiError(400, `Cannot complete task with status ${task.status}. Task must be IN_PROGRESS to complete.`);
-  }
-
-  task.status = 'COMPLETED';
-  task.completedAt = new Date();
-  task.completedByUserId = actor?.userId || null;
-  task.completionNote = completionNote ? completionNote.trim() : '';
-
-  await task.save();
-
-  await recordTaskEvent({
-    taskId: task._id,
-    organizationId,
-    projectId,
-    eventType: 'COMPLETED',
-    actor,
-    previousValue: { status: 'IN_PROGRESS' },
-    newValue: { status: 'COMPLETED', completedAt: task.completedAt, completionNote: task.completionNote },
-    comment: task.completionNote ? `Completed: ${task.completionNote}` : 'Task marked as COMPLETED'
-  });
-
-  // Phase 1 Administrator Notification for Task Completion
-  try {
-    await notifyTaskCompleted(task, actor);
-  } catch (notifErr) {
-    console.error('[TaskService] Non-fatal notification error on task completion:', notifErr);
-  }
-
-  return task;
-}
-
-/**
- * Cancel a Task (OPEN or IN_PROGRESS -> CANCELLED)
- */
-export async function cancelTask({
-  organizationId,
-  projectId,
-  taskId,
-  cancellationReason,
-  actor
-}) {
-  const task = await Task.findOne({ _id: taskId, organizationId, projectId });
-  if (!task) {
-    throw new ApiError(404, 'Task not found');
-  }
-
-  if (task.status === 'COMPLETED' || task.status === 'CANCELLED') {
-    throw new ApiError(400, `Cannot cancel a task that is already ${task.status.toLowerCase()}`);
-  }
-
-  const prevStatus = task.status;
-  task.status = 'CANCELLED';
-  task.cancelledAt = new Date();
-  task.cancelledByUserId = actor?.userId || null;
-  task.cancellationReason = cancellationReason ? cancellationReason.trim() : '';
-
-  await task.save();
-
-  await recordTaskEvent({
-    taskId: task._id,
-    organizationId,
-    projectId,
-    eventType: 'CANCELLED',
-    actor,
-    previousValue: { status: prevStatus },
-    newValue: { status: 'CANCELLED', cancelledAt: task.cancelledAt, cancellationReason: task.cancellationReason },
-    comment: task.cancellationReason ? `Cancelled: ${task.cancellationReason}` : 'Task marked as CANCELLED'
-  });
-
-  return task;
-}
-
-/**
- * Get assignment options and related objects for Task creation and reassignment
- */
-export async function getTaskAssignmentOptions({ organizationId, projectId, teamId = null }) {
-  if (!organizationId || !projectId) {
-    throw new ApiError(400, 'organizationId and projectId are required');
-  }
-
-  // 1. Eligible Teams: ACTIVE Teams with active ProjectTeamAccess, or all active organization teams
-  const accessList = await ProjectTeamAccess.find({
-    organizationId,
-    projectId,
-    status: 'ACTIVE'
-  }).lean();
-
-  let activeTeams = [];
-  if (accessList.length > 0) {
-    const accessTeamIds = accessList.map((a) => a.teamId);
-    activeTeams = await Team.find({
-      _id: { $in: accessTeamIds },
-      organizationId,
       status: 'ACTIVE'
-    }).select('teamCode name teamLeadUserId').lean();
-  } else {
-    activeTeams = await Team.find({
+    }).select('displayName employeeCode').lean() : null;
+
+    const update = await TaskUpdate.create({
+      taskId: task._id,
       organizationId,
-      status: 'ACTIVE'
-    }).select('teamCode name teamLeadUserId').lean();
-  }
-
-  // 2. Eligible Employees: ACTIVE ProjectMembers who are ACTIVE OrganizationMembers with ACTIVE EmployeeProfiles
-  const [projectMembers, orgMembers] = await Promise.all([
-    ProjectMember.find({ projectId, status: 'ACTIVE' }).lean(),
-    OrganizationMember.find({ organizationId, status: 'ACTIVE' }).lean()
-  ]);
-
-  const activeOrgMemberUserIds = new Set(orgMembers.map((om) => om.userId.toString()));
-  const orgAdmins = orgMembers.filter((om) => om.organizationRole === 'ADMINISTRATOR');
-  const orgAdminUserIds = new Set(orgAdmins.map((oa) => oa.userId.toString()));
-
-  const allEligibleUserIds = Array.from(new Set([
-    ...projectMembers.map((pm) => pm.userId.toString()),
-    ...orgAdmins.map((oa) => oa.userId.toString())
-  ])).filter((id) => activeOrgMemberUserIds.has(id))
-    .map((id) => new mongoose.Types.ObjectId(id));
-
-  const [activeUsers, profiles, teamMemberships] = await Promise.all([
-    User.find({ _id: { $in: allEligibleUserIds }, status: 'ACTIVE' }).select('displayName email').lean(),
-    EmployeeProfile.find({ organizationId, userId: { $in: allEligibleUserIds }, status: 'ACTIVE' }).select('displayName employeeCode designation userId').lean(),
-    TeamMember.find({ organizationId, userId: { $in: allEligibleUserIds }, status: 'ACTIVE' }).lean()
-  ]);
-
-  const userMap = new Map(activeUsers.map((u) => [u._id.toString(), u]));
-  const projMemberMap = new Map(projectMembers.map((pm) => [pm.userId.toString(), pm]));
-
-  // Group active teams by user
-  const userTeamIdsMap = new Map();
-  for (const tm of teamMemberships) {
-    const uStr = tm.userId.toString();
-    if (!userTeamIdsMap.has(uStr)) {
-      userTeamIdsMap.set(uStr, []);
-    }
-    userTeamIdsMap.get(uStr).push(tm.teamId.toString());
-  }
-
-  // Iterate over ACTIVE EmployeeProfiles only - excludes unrelated non-employee users
-  const eligibleEmployees = [];
-  for (const prof of profiles) {
-    const uStr = prof.userId.toString();
-    const u = userMap.get(uStr);
-    if (!u) continue; // User must be active
-    const pm = projMemberMap.get(uStr);
-    eligibleEmployees.push({
-      userId: u._id,
-      displayName: prof.displayName || u.displayName || u.email,
-      email: u.email,
-      employeeCode: prof.employeeCode || null,
-      designation: prof.designation || null,
-      role: pm?.role || (orgAdminUserIds.has(uStr) ? 'ADMINISTRATOR' : 'VIEWER'),
-      teamIds: userTeamIdsMap.get(uStr) || []
+      projectId,
+      userId: actor.userId,
+      userSnapshot: {
+        userId: actor.userId,
+        displayName: userProfile?.displayName || actor.displayName || actor.name || actor.email || 'User',
+        email: actor.email || '',
+        employeeCode: userProfile?.employeeCode || null
+      },
+      message: message.trim(),
+      updateType: updateType || 'COMMENT'
     });
+
+    await recordTaskEvent({
+      taskId: task._id,
+      organizationId,
+      projectId,
+      eventType: 'UPDATED',
+      actor,
+      newValue: { message: message.trim(), updateType: update.updateType },
+      comment: `Added update: ${message.trim().slice(0, 100)}`
+    });
+
+    return update;
   }
 
-  // 3. Related Object candidates
-  const [instruments, devices, alarms, investigations, sites, projectDoc] = await Promise.all([
-    Instrument.find({ projectId }).select('code name catalogCode status').sort({ code: 1 }).limit(100).lean(),
-    Device.find({ projectId }).select('uid name status').sort({ name: 1 }).limit(100).lean(),
-    Alarm.find({ projectId, status: { $ne: 'RESOLVED' } }).select('title currentSeverity highestSeverity status triggeredAt').sort({ triggeredAt: -1 }).limit(50).lean(),
-    Investigation.find({ projectId, status: { $ne: 'COMPLETED' } }).select('investigationCode title status priority').sort({ createdAt: -1 }).limit(50).lean(),
-    Site.find({ projectId }).select('code name').sort({ name: 1 }).limit(50).lean(),
-    Project.findById(projectId).select('code name').lean()
-  ]);
-
-  const siteList = sites.map((s) => ({ id: s._id, code: s.code || s.name, name: s.name, type: 'SITE' }));
-  if (siteList.length === 0 && projectDoc) {
-    siteList.push({ id: projectDoc._id, code: projectDoc.code, name: projectDoc.name, type: 'SITE' });
-  }
-
-  return {
-    eligibleTeams: activeTeams.map((t) => ({
-      teamId: t._id,
-      teamCode: t.teamCode,
-      name: t.name
-    })),
-    eligibleEmployees,
-    relatedObjects: {
-      instruments: instruments.map((i) => ({ id: i._id, code: i.code, name: i.name, type: 'INSTRUMENT' })),
-      devices: devices.map((d) => ({ id: d._id, code: d.uid, name: d.name, type: 'DEVICE' })),
-      alarms: alarms.map((a) => ({ id: a._id, code: a.title, name: a.title, severity: a.currentSeverity || a.highestSeverity, type: 'ALARM' })),
-      investigations: investigations.map((inv) => ({ id: inv._id, code: inv.investigationCode, name: inv.title, type: 'INVESTIGATION' })),
-      sites: siteList
+  /**
+   * Complete a Task (IN_PROGRESS -> COMPLETED)
+   */
+  export async function completeTask({
+    organizationId,
+    projectId,
+    taskId,
+    completionNote,
+    actor
+  }) {
+    const task = await Task.findOne({ _id: taskId, organizationId, projectId });
+    if (!task) {
+      throw new ApiError(404, 'Task not found');
     }
-  };
-}
+
+    if (task.status !== 'IN_PROGRESS') {
+      throw new ApiError(400, `Cannot complete task with status ${task.status}. Task must be IN_PROGRESS to complete.`);
+    }
+
+    task.status = 'COMPLETED';
+    task.completedAt = new Date();
+    task.completedByUserId = actor?.userId || null;
+    task.completionNote = completionNote ? completionNote.trim() : '';
+
+    await task.save();
+
+    await recordTaskEvent({
+      taskId: task._id,
+      organizationId,
+      projectId,
+      eventType: 'COMPLETED',
+      actor,
+      previousValue: { status: 'IN_PROGRESS' },
+      newValue: { status: 'COMPLETED', completedAt: task.completedAt, completionNote: task.completionNote },
+      comment: task.completionNote ? `Completed: ${task.completionNote}` : 'Task marked as COMPLETED'
+    });
+
+    // Phase 1 Administrator Notification for Task Completion
+    try {
+      await notifyTaskCompleted(task, actor);
+    } catch (notifErr) {
+      console.error('[TaskService] Non-fatal notification error on task completion:', notifErr);
+    }
+
+    return task;
+  }
+
+  /**
+   * Cancel a Task (OPEN or IN_PROGRESS -> CANCELLED)
+   */
+  export async function cancelTask({
+    organizationId,
+    projectId,
+    taskId,
+    cancellationReason,
+    actor
+  }) {
+    const task = await Task.findOne({ _id: taskId, organizationId, projectId });
+    if (!task) {
+      throw new ApiError(404, 'Task not found');
+    }
+
+    if (task.status === 'COMPLETED' || task.status === 'CANCELLED') {
+      throw new ApiError(400, `Cannot cancel a task that is already ${task.status.toLowerCase()}`);
+    }
+
+    const prevStatus = task.status;
+    task.status = 'CANCELLED';
+    task.cancelledAt = new Date();
+    task.cancelledByUserId = actor?.userId || null;
+    task.cancellationReason = cancellationReason ? cancellationReason.trim() : '';
+
+    await task.save();
+
+    await recordTaskEvent({
+      taskId: task._id,
+      organizationId,
+      projectId,
+      eventType: 'CANCELLED',
+      actor,
+      previousValue: { status: prevStatus },
+      newValue: { status: 'CANCELLED', cancelledAt: task.cancelledAt, cancellationReason: task.cancellationReason },
+      comment: task.cancellationReason ? `Cancelled: ${task.cancellationReason}` : 'Task marked as CANCELLED'
+    });
+
+    return task;
+  }
+
+  /**
+   * Get assignment options and related objects for Task creation and reassignment
+   */
+  export async function getTaskAssignmentOptions({ organizationId, projectId, teamId = null }) {
+    if (!organizationId || !projectId) {
+      throw new ApiError(400, 'organizationId and projectId are required');
+    }
+
+    // 1. Eligible Teams: ACTIVE Teams with active ProjectTeamAccess, or all active organization teams
+    const accessList = await ProjectTeamAccess.find({
+      organizationId,
+      projectId,
+      status: 'ACTIVE'
+    }).lean();
+
+    let activeTeams = [];
+    if (accessList.length > 0) {
+      const accessTeamIds = accessList.map((a) => a.teamId);
+      activeTeams = await Team.find({
+        _id: { $in: accessTeamIds },
+        organizationId,
+        status: 'ACTIVE'
+      }).select('teamCode name teamLeadUserId').lean();
+    } else {
+      activeTeams = await Team.find({
+        organizationId,
+        status: 'ACTIVE'
+      }).select('teamCode name teamLeadUserId').lean();
+    }
+
+    // 2. Eligible Employees: ACTIVE ProjectMembers who are ACTIVE OrganizationMembers with ACTIVE EmployeeProfiles
+    const [projectMembers, orgMembers] = await Promise.all([
+      ProjectMember.find({ projectId, status: 'ACTIVE' }).lean(),
+      OrganizationMember.find({ organizationId, status: 'ACTIVE' }).lean()
+    ]);
+
+    const activeOrgMemberUserIds = new Set(orgMembers.map((om) => om.userId.toString()));
+    const orgAdmins = orgMembers.filter((om) => om.organizationRole === 'ADMINISTRATOR');
+    const orgAdminUserIds = new Set(orgAdmins.map((oa) => oa.userId.toString()));
+
+    const allEligibleUserIds = Array.from(new Set([
+      ...projectMembers.map((pm) => pm.userId.toString()),
+      ...orgAdmins.map((oa) => oa.userId.toString())
+    ])).filter((id) => activeOrgMemberUserIds.has(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+
+    const [activeUsers, profiles, teamMemberships] = await Promise.all([
+      User.find({ _id: { $in: allEligibleUserIds }, status: 'ACTIVE' }).select('displayName email').lean(),
+      EmployeeProfile.find({ organizationId, userId: { $in: allEligibleUserIds }, status: 'ACTIVE' }).select('displayName employeeCode designation userId').lean(),
+      TeamMember.find({ organizationId, userId: { $in: allEligibleUserIds }, status: 'ACTIVE' }).lean()
+    ]);
+
+    const userMap = new Map(activeUsers.map((u) => [u._id.toString(), u]));
+    const projMemberMap = new Map(projectMembers.map((pm) => [pm.userId.toString(), pm]));
+
+    // Group active teams by user
+    const userTeamIdsMap = new Map();
+    for (const tm of teamMemberships) {
+      const uStr = tm.userId.toString();
+      if (!userTeamIdsMap.has(uStr)) {
+        userTeamIdsMap.set(uStr, []);
+      }
+      userTeamIdsMap.get(uStr).push(tm.teamId.toString());
+    }
+
+    // Iterate over ACTIVE EmployeeProfiles only - excludes unrelated non-employee users
+    const eligibleEmployees = [];
+    for (const prof of profiles) {
+      const uStr = prof.userId.toString();
+      const u = userMap.get(uStr);
+      if (!u) continue; // User must be active
+      const pm = projMemberMap.get(uStr);
+      eligibleEmployees.push({
+        userId: u._id,
+        displayName: prof.displayName || u.displayName || u.email,
+        email: u.email,
+        employeeCode: prof.employeeCode || null,
+        designation: prof.designation || null,
+        role: pm?.role || (orgAdminUserIds.has(uStr) ? 'ADMINISTRATOR' : 'VIEWER'),
+        teamIds: userTeamIdsMap.get(uStr) || []
+      });
+    }
+
+    // 3. Related Object candidates
+    const [instruments, devices, alarms, investigations, sites, projectDoc] = await Promise.all([
+      Instrument.find({ projectId }).select('code name catalogCode status').sort({ code: 1 }).limit(100).lean(),
+      Device.find({ projectId }).select('uid name status').sort({ name: 1 }).limit(100).lean(),
+      Alarm.find({ projectId, status: { $ne: 'RESOLVED' } }).select('title currentSeverity highestSeverity status triggeredAt').sort({ triggeredAt: -1 }).limit(50).lean(),
+      Investigation.find({ projectId, status: { $ne: 'COMPLETED' } }).select('investigationCode title status priority').sort({ createdAt: -1 }).limit(50).lean(),
+      Site.find({ projectId }).select('code name').sort({ name: 1 }).limit(50).lean(),
+      Project.findById(projectId).select('code name').lean()
+    ]);
+
+    const siteList = sites.map((s) => ({ id: s._id, code: s.code || s.name, name: s.name, type: 'SITE' }));
+    if (siteList.length === 0 && projectDoc) {
+      siteList.push({ id: projectDoc._id, code: projectDoc.code, name: projectDoc.name, type: 'SITE' });
+    }
+
+    return {
+      eligibleTeams: activeTeams.map((t) => ({
+        teamId: t._id,
+        teamCode: t.teamCode,
+        name: t.name
+      })),
+      eligibleEmployees,
+      relatedObjects: {
+        instruments: instruments.map((i) => ({ id: i._id, code: i.code, name: i.name, type: 'INSTRUMENT' })),
+        devices: devices.map((d) => ({ id: d._id, code: d.uid, name: d.name, type: 'DEVICE' })),
+        alarms: alarms.map((a) => ({ id: a._id, code: a.title, name: a.title, severity: a.currentSeverity || a.highestSeverity, type: 'ALARM' })),
+        investigations: investigations.map((inv) => ({ id: inv._id, code: inv.investigationCode, name: inv.title, type: 'INVESTIGATION' })),
+        sites: siteList
+      }
+    };
+  }

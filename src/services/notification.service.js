@@ -5,7 +5,8 @@ import {
   OrganizationMember,
   User,
   Task,
-  Instrument
+  Instrument,
+  EmployeeProfile
 } from '../models/index.js';
 import { ApiError } from '../utils/api-error.js';
 
@@ -13,7 +14,7 @@ import { ApiError } from '../utils/api-error.js';
  * Legacy notification queuing for decision engine.
  * Preserved for backward compatibility.
  */
-export async function queueAlarmNotifications({ alarm, decision, emit = () => {} }) {
+export async function queueAlarmNotifications({ alarm, decision, emit = () => { } }) {
   const members = await ProjectMember.find({
     projectId: alarm.projectId,
     status: 'ACTIVE',
@@ -457,4 +458,278 @@ export async function markAllRead({ organizationId, projectId, recipientUserId }
     }
   );
   return { modifiedCount: result.modifiedCount };
+}
+
+/**
+ * =============================================================================
+ * PHASE 2: EMPLOYEE ASSIGNMENT NOTIFICATIONS (DIRECT RECIPIENT)
+ * =============================================================================
+ */
+
+/**
+ * Validate that an employee user is an eligible direct notification recipient:
+ * - Active User in User collection
+ * - Active OrganizationMember in the target organization
+ * - Active ProjectMember in the target project
+ * - Active EmployeeProfile in the target organization
+ */
+export async function validateDirectEmployeeRecipient({ organizationId, projectId, userId }) {
+  if (!organizationId || !projectId || !userId) return null;
+
+  const [user, orgMember, projectMember, employeeProfile] = await Promise.all([
+    User.findOne({ _id: userId, status: 'ACTIVE' }).select('_id email displayName').lean(),
+    OrganizationMember.findOne({ organizationId, userId, status: 'ACTIVE' }).lean(),
+    ProjectMember.findOne({ projectId, userId, status: 'ACTIVE' }).lean(),
+    EmployeeProfile.findOne({ organizationId, userId, status: 'ACTIVE' }).lean()
+  ]);
+
+  if (!user || !orgMember || !projectMember || !employeeProfile) {
+    return null;
+  }
+
+  return { user, employeeProfile, projectMember };
+}
+
+/**
+ * Dispatch a direct notification to a single employee.
+ * Validates recipient eligibility, applies transition-based deduplication,
+ * and isolates errors so domain workflows are never failed by notification issues.
+ */
+export async function notifyDirectAssignee({
+  organizationId,
+  projectId,
+  recipientUserId,
+  type,
+  title,
+  message,
+  importance = 'NORMAL',
+  relatedObjectType,
+  relatedObjectId,
+  relatedObjectCode,
+  relatedObjectSnapshot = {},
+  dedupeKey
+}) {
+  try {
+    if (!recipientUserId) return null;
+
+    const recipient = await validateDirectEmployeeRecipient({
+      organizationId,
+      projectId,
+      userId: recipientUserId
+    });
+
+    if (!recipient) {
+      console.warn(`[NotificationService] Recipient ${recipientUserId} is not an eligible active employee in project ${projectId}`);
+      return null;
+    }
+
+    if (dedupeKey) {
+      const existing = await Notification.findOne({ dedupeKey }).select('_id').lean();
+      if (existing) {
+        return existing;
+      }
+    }
+
+    const notification = await Notification.create({
+      organizationId,
+      projectId,
+      recipientUserId,
+      type,
+      title,
+      message,
+      importance,
+      relatedObjectType,
+      relatedObjectId,
+      relatedObjectCode,
+      relatedObjectSnapshot,
+      dedupeKey,
+      isRead: false,
+      readAt: null
+    });
+
+    return notification;
+  } catch (err) {
+    if (err.code === 11000 || err.message?.includes('E11000')) {
+      // Duplicate key collision gracefully handled
+      return null;
+    }
+    console.error(`[NotificationService] Error creating direct employee notification for ${recipientUserId}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Event: Task assigned to Employee
+ */
+export async function notifyTaskAssigned({ task, eventId, actor = {} }) {
+  try {
+    if (!task || !task.assignedUserId) return null;
+
+    const recipientUserId = task.assignedUserId;
+    const taskCode = task.taskCode || 'Task';
+    const actorName = actor?.displayName || actor?.name || actor?.email || null;
+    const dedupeKey = eventId
+      ? `TASK_ASSIGNED:${task._id}:${eventId}:${recipientUserId}`
+      : `TASK_ASSIGNED:${task._id}:${Date.now()}:${recipientUserId}`;
+
+    return await notifyDirectAssignee({
+      organizationId: task.organizationId,
+      projectId: task.projectId,
+      recipientUserId,
+      type: 'EMPLOYEE_TASK_ASSIGNED',
+      title: 'Task assigned to you',
+      message: `${taskCode} has been assigned to you.`,
+      importance: 'NORMAL',
+      relatedObjectType: 'TASK',
+      relatedObjectId: task._id,
+      relatedObjectCode: task.taskCode || null,
+      relatedObjectSnapshot: {
+        taskId: task._id,
+        taskCode: task.taskCode || null,
+        title: task.title,
+        priority: task.priority,
+        assignedTeam: task.assignedTeamSnapshot?.teamName || null,
+        assignedEmployee: task.assignedUserSnapshot?.displayName || null,
+        dueDate: task.dueDate || null,
+        assignedBy: actorName,
+        assignedAt: task.assignedAt || new Date()
+      },
+      dedupeKey
+    });
+  } catch (err) {
+    console.error('[NotificationService] Error in notifyTaskAssigned:', err);
+    return null;
+  }
+}
+
+/**
+ * Event: Task reassigned to Employee
+ */
+export async function notifyTaskReassigned({ task, eventId, actor = {} }) {
+  try {
+    if (!task || !task.assignedUserId) return null;
+
+    const recipientUserId = task.assignedUserId;
+    const taskCode = task.taskCode || 'Task';
+    const actorName = actor?.displayName || actor?.name || actor?.email || null;
+    const dedupeKey = eventId
+      ? `TASK_REASSIGNED:${task._id}:${eventId}:${recipientUserId}`
+      : `TASK_REASSIGNED:${task._id}:${Date.now()}:${recipientUserId}`;
+
+    return await notifyDirectAssignee({
+      organizationId: task.organizationId,
+      projectId: task.projectId,
+      recipientUserId,
+      type: 'EMPLOYEE_TASK_REASSIGNED',
+      title: 'Task reassigned to you',
+      message: `${taskCode} has been reassigned to you.`,
+      importance: 'NORMAL',
+      relatedObjectType: 'TASK',
+      relatedObjectId: task._id,
+      relatedObjectCode: task.taskCode || null,
+      relatedObjectSnapshot: {
+        taskId: task._id,
+        taskCode: task.taskCode || null,
+        title: task.title,
+        priority: task.priority,
+        assignedTeam: task.assignedTeamSnapshot?.teamName || null,
+        assignedEmployee: task.assignedUserSnapshot?.displayName || null,
+        dueDate: task.dueDate || null,
+        assignedBy: actorName,
+        assignedAt: task.assignedAt || new Date()
+      },
+      dedupeKey
+    });
+  } catch (err) {
+    console.error('[NotificationService] Error in notifyTaskReassigned:', err);
+    return null;
+  }
+}
+
+/**
+ * Event: Investigation assigned to Employee
+ */
+export async function notifyInvestigationAssigned({ investigation, eventId, actor = {} }) {
+  try {
+    if (!investigation || !investigation.assignedTo) return null;
+
+    const recipientUserId = investigation.assignedTo;
+    const invCode = investigation.investigationCode || 'Investigation';
+    const actorName = actor?.displayName || actor?.name || actor?.email || null;
+    const dedupeKey = eventId
+      ? `INVESTIGATION_ASSIGNED:${investigation._id}:${eventId}:${recipientUserId}`
+      : `INVESTIGATION_ASSIGNED:${investigation._id}:${Date.now()}:${recipientUserId}`;
+
+    return await notifyDirectAssignee({
+      organizationId: investigation.organizationId,
+      projectId: investigation.projectId,
+      recipientUserId,
+      type: 'EMPLOYEE_INVESTIGATION_ASSIGNED',
+      title: 'Investigation assigned to you',
+      message: `${invCode} has been assigned to you.`,
+      importance: 'IMPORTANT',
+      relatedObjectType: 'INVESTIGATION',
+      relatedObjectId: investigation._id,
+      relatedObjectCode: investigation.investigationCode || null,
+      relatedObjectSnapshot: {
+        investigationId: investigation._id,
+        investigationCode: investigation.investigationCode || null,
+        title: investigation.title,
+        sourceAlarmCode: investigation.alarmSnapshot?.alarmCode || investigation.alarmSnapshot?.title || null,
+        priority: investigation.priority,
+        assignedTeam: investigation.assignedTeamSnapshot?.teamName || null,
+        assignedEmployee: investigation.assignedUserSnapshot?.displayName || null,
+        assignedBy: actorName,
+        assignedAt: investigation.assignedAt || new Date()
+      },
+      dedupeKey
+    });
+  } catch (err) {
+    console.error('[NotificationService] Error in notifyInvestigationAssigned:', err);
+    return null;
+  }
+}
+
+/**
+ * Event: Investigation reassigned to Employee
+ */
+export async function notifyInvestigationReassigned({ investigation, eventId, actor = {} }) {
+  try {
+    if (!investigation || !investigation.assignedTo) return null;
+
+    const recipientUserId = investigation.assignedTo;
+    const invCode = investigation.investigationCode || 'Investigation';
+    const actorName = actor?.displayName || actor?.name || actor?.email || null;
+    const dedupeKey = eventId
+      ? `INVESTIGATION_REASSIGNED:${investigation._id}:${eventId}:${recipientUserId}`
+      : `INVESTIGATION_REASSIGNED:${investigation._id}:${Date.now()}:${recipientUserId}`;
+
+    return await notifyDirectAssignee({
+      organizationId: investigation.organizationId,
+      projectId: investigation.projectId,
+      recipientUserId,
+      type: 'EMPLOYEE_INVESTIGATION_REASSIGNED',
+      title: 'Investigation reassigned to you',
+      message: `${invCode} has been assigned to you.`,
+      importance: 'IMPORTANT',
+      relatedObjectType: 'INVESTIGATION',
+      relatedObjectId: investigation._id,
+      relatedObjectCode: investigation.investigationCode || null,
+      relatedObjectSnapshot: {
+        investigationId: investigation._id,
+        investigationCode: investigation.investigationCode || null,
+        title: investigation.title,
+        sourceAlarmCode: investigation.alarmSnapshot?.alarmCode || investigation.alarmSnapshot?.title || null,
+        priority: investigation.priority,
+        assignedTeam: investigation.assignedTeamSnapshot?.teamName || null,
+        assignedEmployee: investigation.assignedUserSnapshot?.displayName || null,
+        assignedBy: actorName,
+        assignedAt: investigation.assignedAt || new Date()
+      },
+      dedupeKey
+    });
+  } catch (err) {
+    console.error('[NotificationService] Error in notifyInvestigationReassigned:', err);
+    return null;
+  }
 }
