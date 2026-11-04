@@ -4,6 +4,7 @@ import {
   InvestigationEvent,
   InvestigationNote,
   Alarm,
+  Project,
   ProjectMember,
   OrganizationMember,
   User,
@@ -14,18 +15,31 @@ import {
 } from '../models/index.js';
 import { ApiError } from '../utils/api-error.js';
 import { audit } from './audit.service.js';
+import { notifyInvestigationCompleted } from './notification.service.js';
 
 /**
  * Validate that a Team is eligible for assignment on a project.
- * - Team.organizationId must match project organization (no foreign-org)
- * - Team.status === 'ACTIVE' (no inactive teams)
- * - Team must have ACTIVE ProjectTeamAccess for the project
- * - Team must have investigations.view permission if permissions are defined
+ * - Project exists and belongs to the specified organization.
+ * - Team exists, belongs to project's organization, and is ACTIVE.
+ * - If project is ROLE_BASED: Team is eligible without requiring ProjectTeamAccess.
+ * - If project is TEAM_PERMISSIONS: Team must have ACTIVE ProjectTeamAccess with investigations permission.
  */
 export async function validateTeamAssignment({ organizationId, projectId, teamId }) {
   if (!teamId) return null;
   if (!mongoose.Types.ObjectId.isValid(teamId)) {
     throw new ApiError(400, 'Invalid team ID format');
+  }
+  if (!projectId || !mongoose.Types.ObjectId.isValid(projectId)) {
+    throw new ApiError(400, 'Invalid project ID format');
+  }
+
+  const project = await Project.findById(projectId).lean();
+  if (!project) {
+    throw new ApiError(404, 'Project not found');
+  }
+
+  if (project.organizationId.toString() !== organizationId.toString()) {
+    throw new ApiError(403, 'Project does not belong to the project organization');
   }
 
   const team = await Team.findById(teamId).lean();
@@ -41,6 +55,14 @@ export async function validateTeamAssignment({ organizationId, projectId, teamId
     throw new ApiError(400, 'Cannot assign an inactive team to an investigation');
   }
 
+  const accessMode = project.accessMode || 'ROLE_BASED';
+
+  if (accessMode === 'ROLE_BASED') {
+    // In ROLE_BASED mode, active teams in the same organization are eligible without ProjectTeamAccess
+    return { team, teamAccess: null };
+  }
+
+  // In TEAM_PERMISSIONS mode: require ACTIVE ProjectTeamAccess and valid investigation permissions
   const teamAccess = await ProjectTeamAccess.findOne({
     organizationId,
     projectId,
@@ -711,6 +733,13 @@ export async function completeInvestigation({
     }
   });
 
+  // Phase 1 Administrator Notification for Investigation Completion
+  try {
+    await notifyInvestigationCompleted(investigation, actor);
+  } catch (notifErr) {
+    console.error('[InvestigationService] Non-fatal notification error on investigation completion:', notifErr);
+  }
+
   return investigation;
 }
 
@@ -794,27 +823,59 @@ export async function listInvestigations({
 /**
  * Retrieve candidate assignment options (teams and members) for a project.
  * Phase A1E: Scoped strictly to project and organization.
+ * In ROLE_BASED mode: all ACTIVE teams in organization are eligible.
+ * In TEAM_PERMISSIONS mode: only teams with active ProjectTeamAccess and investigations permission.
  */
 export async function getInvestigationAssignmentOptions({ projectId, organizationId, teamId }) {
   if (!projectId || !organizationId) {
     throw new ApiError(400, 'projectId and organizationId are required');
   }
+  if (!mongoose.Types.ObjectId.isValid(projectId)) {
+    throw new ApiError(400, 'Invalid projectId format');
+  }
 
-  // 1. Find all ACTIVE ProjectTeamAccess for this project and organization
-  const activeAccessList = await ProjectTeamAccess.find({
-    organizationId,
-    projectId,
-    status: 'ACTIVE'
-  }).lean();
+  const project = await Project.findById(projectId).lean();
+  if (!project) {
+    throw new ApiError(404, 'Project not found');
+  }
 
-  const accessTeamIds = activeAccessList.map(a => a.teamId);
+  if (project.organizationId.toString() !== organizationId.toString()) {
+    throw new ApiError(403, 'Project does not belong to this organization');
+  }
 
-  // 2. Find matching ACTIVE Teams in organization
-  const activeTeams = await Team.find({
-    _id: { $in: accessTeamIds },
-    organizationId,
-    status: 'ACTIVE'
-  }).lean();
+  const accessMode = project.accessMode || 'ROLE_BASED';
+
+  let activeTeams = [];
+
+  if (accessMode === 'ROLE_BASED') {
+    // In ROLE_BASED mode, all ACTIVE teams belonging to the same organization are eligible
+    activeTeams = await Team.find({
+      organizationId,
+      status: 'ACTIVE'
+    }).sort({ teamCode: 1, createdAt: 1 }).lean();
+  } else {
+    // In TEAM_PERMISSIONS mode, require ACTIVE ProjectTeamAccess with investigations permission
+    const activeAccessList = await ProjectTeamAccess.find({
+      organizationId,
+      projectId,
+      status: 'ACTIVE'
+    }).lean();
+
+    const eligibleAccessList = activeAccessList.filter(access => {
+      if (Array.isArray(access.permissions) && access.permissions.length > 0) {
+        return access.permissions.includes('investigations.view');
+      }
+      return true;
+    });
+
+    const accessTeamIds = eligibleAccessList.map(a => a.teamId);
+
+    activeTeams = await Team.find({
+      _id: { $in: accessTeamIds },
+      organizationId,
+      status: 'ACTIVE'
+    }).sort({ teamCode: 1, createdAt: 1 }).lean();
+  }
 
   // 3. For each eligible team, get lead displayName and active member count
   const eligibleTeams = await Promise.all(activeTeams.map(async (t) => {

@@ -13,6 +13,8 @@ export const env = {
   deviceKeyHeader: (process.env.DEVICE_KEY_HEADER || 'x-device-key').toLowerCase(),
   missingDataCron: process.env.MISSING_DATA_CRON || '*/5 * * * *',
   enableMissingDataWatch: String(process.env.ENABLE_MISSING_DATA_WATCH || 'true') === 'true',
+  taskOverdueCron: process.env.TASK_OVERDUE_CRON || '*/15 * * * *',
+  enableTaskOverdueWatch: String(process.env.ENABLE_TASK_OVERDUE_WATCH || 'true') === 'true',
   uploadMaxMb: Number(process.env.UPLOAD_MAX_MB || 20),
   enableMqtt: String(process.env.ENABLE_MQTT || 'false') === 'true',
   mqttUrl: process.env.MQTT_URL || 'mqtt://127.0.0.1:1883',

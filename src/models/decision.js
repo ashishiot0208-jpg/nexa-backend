@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { Counter } from './sensor.js';
 const { Schema, model } = mongoose;
 
 const decisionSnapshotSchema = new Schema({
@@ -165,8 +166,43 @@ const alarmEventSchema = new Schema({
 }, { timestamps: true });
 
 const notificationSchema = new Schema({
-  organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true },
-  projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },
+  notificationCode: { type: String, unique: true, sparse: true, index: true },
+  organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true, index: true },
+  projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true, index: true },
+  recipientUserId: { type: Schema.Types.ObjectId, ref: 'User', index: true },
+
+  type: {
+    type: String,
+    enum: [
+      'ADMIN_S4_ALARM',
+      'ADMIN_TASK_COMPLETED',
+      'ADMIN_TASK_OVERDUE',
+      'ADMIN_INVESTIGATION_COMPLETED'
+    ]
+  },
+
+  title: { type: String },
+  message: { type: String },
+  importance: {
+    type: String,
+    enum: ['NORMAL', 'IMPORTANT', 'CRITICAL'],
+    default: 'NORMAL'
+  },
+
+  relatedObjectType: {
+    type: String,
+    enum: ['ALARM', 'TASK', 'INVESTIGATION']
+  },
+  relatedObjectId: { type: Schema.Types.ObjectId, index: true },
+  relatedObjectCode: { type: String },
+  relatedObjectSnapshot: { type: Schema.Types.Mixed, default: {} },
+
+  isRead: { type: Boolean, default: false, index: true },
+  readAt: { type: Date, default: null },
+
+  dedupeKey: { type: String, unique: true, sparse: true },
+
+  // Legacy fields preserved for backward compatibility
   alarmId: { type: Schema.Types.ObjectId, ref: 'Alarm' },
   decisionId: { type: Schema.Types.ObjectId, ref: 'DecisionSnapshot' },
   channel: { type: String, enum: ['IN_APP', 'EMAIL', 'SMS', 'PUSH', 'WEBHOOK', 'VOICE'], default: 'IN_APP' },
@@ -177,6 +213,26 @@ const notificationSchema = new Schema({
   sentAt: Date,
   failureReason: String
 }, { timestamps: true });
+
+notificationSchema.index({ recipientUserId: 1, projectId: 1, isRead: 1, createdAt: -1 });
+notificationSchema.index({ organizationId: 1, projectId: 1, createdAt: -1 });
+
+notificationSchema.pre('save', async function (next) {
+  if (this.isNew && !this.notificationCode) {
+    try {
+      const year = new Date().getFullYear();
+      const counter = await Counter.findByIdAndUpdate(
+        { _id: `notificationCode_${year}` },
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true }
+      );
+      this.notificationCode = `NOTIF-${year}-${String(counter.seq).padStart(5, '0')}`;
+    } catch {
+      this.notificationCode = `NOTIF-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    }
+  }
+  if (typeof next === 'function') next();
+});
 
 const auditEventSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: 'Organization' },

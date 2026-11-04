@@ -87,6 +87,7 @@ import {
 } from '../src/models/index.js';
 import { getInvestigationReport, getInvestigationSummaryReport, getOverallProjectReport } from '../src/services/report.service.js';
 import { generateReportPdf } from '../src/services/report-export.service.js';
+import { cleanupA1EFixtures } from './cleanup-phase-a1e-fixtures.js';
 
 const MONGO_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/geonexa';
 const TEST_PORT = 3132;
@@ -144,12 +145,8 @@ async function runTestSuite() {
   await mongoose.connect(MONGO_URI);
   console.log('Connected to MongoDB:', MONGO_URI);
 
-  // Clean up any residual test records from prior runs
-  await EmployeeProfile.deleteMany({ employeeCode: { $in: ['EMP-0017', 'EMP-0018'] } });
-  await User.deleteMany({ email: { $in: ['a1e-user-a@geonexa.test', 'a1e-user-b@geonexa.test', 'a1e-outsider@geonexa.test', 'a1e-inact-mem@geonexa.test', 'a1e-inact-org@geonexa.test', 'a1e-nonproj@geonexa.test'] } });
-  await Team.deleteMany({ teamCode: /^TEST-A1E-/ });
-  await Project.deleteMany({ code: /^TEST-A1E-/ });
-  await Investigation.deleteMany({ title: /^A1E-TEST-/ });
+  // Clean up any residual test records from prior runs safely
+  await cleanupA1EFixtures();
 
   // 1. Initial State & Invariant Snapshots
   const initialProjectMemberCount = await ProjectMember.countDocuments();
@@ -241,10 +238,6 @@ async function runTestSuite() {
     },
     { upsert: true }
   );
-
-  // Clean up any previous test teams/investigations
-  await Team.deleteMany({ teamCode: /^TEST-A1E-/ });
-  await Investigation.deleteMany({ title: /^A1E-TEST-/ });
 
   // Foreign Organization
   const foreignOrgId = new mongoose.Types.ObjectId();
@@ -827,14 +820,8 @@ async function runTestSuite() {
     assert(finalAlarmCount === initialAlarmCount, `41. Alarm count unmodified (${finalAlarmCount} === ${initialAlarmCount})`);
 
     // 42. Clean up temporary test data
-    await Investigation.deleteMany({ _id: testInv._id });
-    await InvestigationEvent.deleteMany({ investigationId: testInv._id });
-    await TeamMember.deleteMany({ teamId: { $in: [teamGeotech._id, teamMaint._id, teamInactive._id, teamNoAccess._id] } });
-    await ProjectTeamAccess.deleteMany({ teamId: { $in: [teamGeotech._id, teamMaint._id, teamInactive._id, teamNoAccess._id] } });
-    await Team.deleteMany({ _id: { $in: [teamGeotech._id, teamMaint._id, teamInactive._id, teamNoAccess._id, foreignTeam._id] } });
-    await User.deleteMany({ _id: { $in: [userInactiveMember._id, userInactiveOrg._id, userNonProject._id] } });
-    await OrganizationMember.deleteMany({ userId: { $in: [userInactiveMember._id, userInactiveOrg._id, userNonProject._id] } });
-    await EmployeeProfile.deleteMany({ employeeCode: { $in: ['EMP-0017', 'EMP-0018'] } });
+    console.log('\n--- SECTION 42: CLEANUP TEMPORARY TEST DATA ---');
+    await cleanupA1EFixtures({ verbose: true });
     console.log('[CLEANUP] Temporary test fixtures cleaned up successfully');
 
     console.log('\n========================================================');
@@ -842,6 +829,11 @@ async function runTestSuite() {
     console.log('========================================================\n');
 
   } finally {
+    try {
+      await cleanupA1EFixtures();
+    } catch (cleanupError) {
+      console.error('[FINALLY CLEANUP ERROR]:', cleanupError);
+    }
     if (server) {
       await new Promise(resolve => server.close(resolve));
     }

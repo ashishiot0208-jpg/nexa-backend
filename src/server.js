@@ -5,6 +5,7 @@ import { connectDb, disconnectDb } from './config/db.js';
 import { env } from './config/env.js';
 import { createApp } from './app.js';
 import { refreshMissingDataHealth } from './services/health.service.js';
+import { checkAndNotifyOverdueTasks } from './services/notification.service.js';
 import { startMqttIngestion } from './services/mqtt.service.js';
 import { PlatformAdmin } from './models/index.js';
 import bcrypt from 'bcryptjs';
@@ -28,6 +29,13 @@ if (env.enableMissingDataWatch) {
   cron.schedule(env.missingDataCron, async () => {
     try { await refreshMissingDataHealth({ emit: app.locals.emitEvent }); }
     catch (err) { console.error('[health-watch]', err); }
+  });
+}
+
+if (env.enableTaskOverdueWatch) {
+  cron.schedule(env.taskOverdueCron, async () => {
+    try { await checkAndNotifyOverdueTasks(); }
+    catch (err) { console.error('[task-overdue-watch]', err); }
   });
 }
 

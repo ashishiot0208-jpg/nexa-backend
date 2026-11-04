@@ -18,6 +18,7 @@ import {
   Site
 } from '../models/index.js';
 import { ApiError } from '../utils/api-error.js';
+import { notifyTaskCompleted } from './notification.service.js';
 
 /**
  * Record an audit event for a task
@@ -657,6 +658,13 @@ export async function completeTask({
     newValue: { status: 'COMPLETED', completedAt: task.completedAt, completionNote: task.completionNote },
     comment: task.completionNote ? `Completed: ${task.completionNote}` : 'Task marked as COMPLETED'
   });
+
+  // Phase 1 Administrator Notification for Task Completion
+  try {
+    await notifyTaskCompleted(task, actor);
+  } catch (notifErr) {
+    console.error('[TaskService] Non-fatal notification error on task completion:', notifErr);
+  }
 
   return task;
 }

@@ -5,6 +5,7 @@ import { audit } from './audit.service.js';
 import { ensureProjectAccess } from '../middleware/auth.js';
 import { severityRank } from '../utils/severity.js';
 import { resolveApplicableAlarmPolicy } from './alarm-policy.service.js';
+import { notifyS4Alarm } from './notification.service.js';
 
 // =========================================================================
 // CANONICAL ALARM LIFECYCLE (Phase C6A)
@@ -280,6 +281,17 @@ export async function createAlarm({
     status: alarm.status,
     severity: alarm.currentSeverity
   });
+
+  // Phase 1 Administrator Notification for new canonical S4 Alarms
+  if (alarm.currentSeverity === 'S4' || alarm.severity === 'S4') {
+    try {
+      await notifyS4Alarm(alarm, {
+        parameter: parameterCode
+      });
+    } catch (notifErr) {
+      console.error('[AlarmService] Non-fatal notification error on S4 alarm creation:', notifErr);
+    }
+  }
 
   return { alarm, isDuplicate: false };
 }
