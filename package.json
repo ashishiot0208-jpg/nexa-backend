@@ -9,7 +9,9 @@
     "start": "node src/server.js",
     "seed": "node src/seed/seed.js",
     "check": "node scripts/check-syntax.js",
+    "migrate:indexes": "node scripts/migrate-rawreading-index.js",
     "mongo:local": "node scripts/start-local-mongo.js",
+    "simulator": "node scripts/simulator/cli.js",
     "telemetry:simulate": "node scripts/telemetry-simulator.js"
   },
   "engines": {

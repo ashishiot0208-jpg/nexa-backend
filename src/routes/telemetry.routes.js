@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
 import { Device, DerivedReading, LatestState, RawReading } from '../models/index.js';
-import { requireDevice } from '../middleware/device-auth.js';
+import { requireDevice, requireDeviceAuth } from '../middleware/device-auth.js';
 import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ingestTelemetry, processTelemetry } from '../services/telemetry.service.js';
@@ -10,8 +10,17 @@ import { ApiError } from '../utils/api-error.js';
 
 const router = Router();
 
-router.post('/telemetry/ingest', asyncHandler(async (req, res) => {
-  const result = await ingestTelemetry(req.body, { emit: req.app.locals.emitEvent });
+router.post('/telemetry/ingest', requireDeviceAuth, asyncHandler(async (req, res) => {
+  const result = await ingestTelemetry(req.body, { emit: req.app.locals.emitEvent, device: req.device });
+  res.status(200).json(result);
+}));
+
+router.post('/telemetry/ingest-generic', requireDeviceAuth, asyncHandler(async (req, res) => {
+  const payload = req.body || {};
+  if (payload.schemaVersion === undefined) {
+    throw new ApiError(400, 'schemaVersion is required for generic telemetry ingestion');
+  }
+  const result = await ingestTelemetry(payload, { emit: req.app.locals.emitEvent, device: req.device });
   res.status(200).json(result);
 }));
 
@@ -19,7 +28,7 @@ router.post('/projects/:projectId/telemetry/manual', requireAuth, requireProject
   const device = await Device.findOne({ _id: req.body.deviceMongoId, projectId: req.params.projectId, organizationId: req.auth.organizationId });
   if (!device) throw new ApiError(404, 'Device not found');
   const payload = req.body.payload || req.body;
-  const result = await ingestTelemetry({ ...payload, deviceCode: device.deviceId }, { emit: req.app.locals.emitEvent });
+  const result = await ingestTelemetry({ ...payload, deviceCode: device.deviceId }, { emit: req.app.locals.emitEvent, device });
   res.status(200).json(result);
 }));
 

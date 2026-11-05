@@ -16,6 +16,12 @@ export async function connectDb() {
       autoIndex: env.nodeEnv !== 'production',
       serverSelectionTimeoutMS: 3000
     });
+    try {
+      const { ensureIndexesMigrated } = await import('./index-migration.js');
+      await ensureIndexesMigrated(mongoose.connection.db);
+    } catch (migErr) {
+      console.warn('[db] Warning: Index migration check encountered an error:', migErr.message);
+    }
     return mongoose.connection;
   } catch (err) {
     const isConnRefused = err.message && (err.message.includes('ECONNREFUSED') || err.name === 'MongooseServerSelectionError');
@@ -56,6 +62,13 @@ export async function connectDb() {
         };
         process.on('SIGINT', shutdown);
         process.on('SIGTERM', shutdown);
+
+        try {
+          const { ensureIndexesMigrated } = await import('./index-migration.js');
+          await ensureIndexesMigrated(mongoose.connection.db);
+        } catch (migErr) {
+          console.warn('[db] Warning: Index migration check encountered an error:', migErr.message);
+        }
 
         return mongoose.connection;
       } catch (autoErr) {

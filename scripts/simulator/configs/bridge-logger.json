@@ -1,0 +1,65 @@
+{
+  "deviceCode": "BRIDGE-DEV-001",
+  "intervalMs": 10000,
+  "scenario": "NORMAL",
+  "health": {
+    "batteryV": 3.88,
+    "rssiDbm": -72,
+    "network": "LTE",
+    "internalTempC": 29.8,
+    "faultBits": []
+  },
+  "slots": [
+    {
+      "slot": 1,
+      "channels": [
+        {
+          "channelCode": "TILT_X",
+          "generator": {
+            "type": "range",
+            "min": -0.5,
+            "max": 0.5
+          }
+        },
+        {
+          "channelCode": "TILT_Y",
+          "generator": {
+            "type": "range",
+            "min": -0.2,
+            "max": 0.2
+          }
+        },
+        {
+          "channelCode": "TEMP",
+          "generator": {
+            "type": "fixed",
+            "value": 26.0
+          }
+        }
+      ]
+    },
+    {
+      "slot": 2,
+      "channels": [
+        {
+          "channelCode": "STRAIN_1",
+          "generator": {
+            "type": "gradual_rise",
+            "initial": 10.0,
+            "step": 0.05,
+            "max": 50.0
+          }
+        },
+        {
+          "channelCode": "STRAIN_2",
+          "generator": {
+            "type": "stable",
+            "baseline": 120.0,
+            "noise": 0.5
+          }
+        }
+      ]
+    }
+  ]
+}
+

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { ApiError } from '../utils/api-error.js';
 const { Schema, model } = mongoose;
 
 const instrumentSchema = new Schema({
@@ -58,7 +59,26 @@ const sensorChannelSchema = new Schema({
   enabled: { type: Boolean, default: true },
   metadata: { type: Schema.Types.Mixed, default: {} }
 }, { timestamps: true });
-sensorChannelSchema.index({ instrumentId: 1, code: 1 }, { unique: true });
+
+sensorChannelSchema.pre('validate', async function () {
+  if (!this.code || typeof this.code !== 'string') return;
+  this.code = this.code.trim();
+  if (!this.isModified('code') && !this.isNew) return;
+  if (!this.instrumentId) return;
+
+  const escaped = this.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const existing = await this.constructor.findOne({
+    instrumentId: this.instrumentId,
+    _id: { $ne: this._id },
+    code: { $regex: new RegExp(`^${escaped}$`, 'i') }
+  }).lean();
+
+  if (existing) {
+    throw new ApiError(400, `Duplicate channel code '${this.code}' on instrument: channel '${existing.code}' already exists`);
+  }
+});
+
+sensorChannelSchema.index({ instrumentId: 1, code: 1 }, { unique: true, collation: { locale: 'en', strength: 2 } });
 
 const deviceSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true },
@@ -96,6 +116,7 @@ deviceSchema.index({ organizationId: 1, devEui: 1 }, { sparse: true });
 deviceSchema.index({ organizationId: 1, imei: 1 }, { sparse: true });
 deviceSchema.index({ organizationId: 1, macAddress: 1 }, { sparse: true });
 deviceSchema.index({ projectId: 1, deviceType: 1 });
+deviceSchema.index({ apiKeyHash: 1 }, { sparse: true });
 
 const calibrationVersionSchema = new Schema({
   projectId: { type: Schema.Types.ObjectId, ref: 'Project', required: true },

@@ -24,7 +24,7 @@ const rawReadingSchema = new Schema({
 }, { timestamps: true });
 rawReadingSchema.index({ projectId: 1, instrumentId: 1, channelId: 1, sampleTime: -1 });
 rawReadingSchema.index({ projectId: 1, channelId: 1, sampleTime: -1 });
-rawReadingSchema.index({ deviceId: 1, messageId: 1, channelCode: 1 }, { unique: true, sparse: true });
+rawReadingSchema.index({ deviceId: 1, messageId: 1, instrumentId: 1, channelCode: 1 }, { unique: true, sparse: true });
 
 const derivedReadingSchema = new Schema({
   organizationId: { type: Schema.Types.ObjectId, ref: 'Organization', required: true },

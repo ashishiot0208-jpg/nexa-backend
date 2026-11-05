@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { createApp } from '../src/app.js';
+import { sha256 } from '../src/utils/crypto.js';
 import {
   Device,
   DeviceGatewayMapping,
@@ -59,6 +60,18 @@ async function runTests() {
     const initSdmCount = await SensorDeviceMapping.countDocuments();
     const initDgmCount = await DeviceGatewayMapping.countDocuments();
 
+    // Ensure test devices have valid API keys
+    const dev1Key = 'gxn_test_key_snrs485_0001';
+    const dev2Key = 'gxn_test_key_dlvw08_0001';
+    await Device.updateOne(
+      { deviceId: 'SNRS485-2026-0001' },
+      { $set: { apiKeyHash: sha256(dev1Key), apiKeyPrefix: dev1Key.slice(0, 10) } }
+    );
+    await Device.updateOne(
+      { deviceId: 'DLVW08-2026-0001' },
+      { $set: { apiKeyHash: sha256(dev2Key), apiKeyPrefix: dev2Key.slice(0, 10) } }
+    );
+
     // ----------------------------------------------------
     // TEST CHAIN 1: Automatic Inclinometer (INC-2026-0001)
     // ----------------------------------------------------
@@ -84,7 +97,7 @@ async function runTests() {
 
     const res1 = await fetch(ingestUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-device-key': dev1Key },
       body: JSON.stringify(incPacket)
     });
     const body1 = await res1.json();
@@ -141,7 +154,7 @@ async function runTests() {
 
     const res2 = await fetch(ingestUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-device-key': dev2Key },
       body: JSON.stringify(pzPacket)
     });
     const body2 = await res2.json();
@@ -157,12 +170,27 @@ async function runTests() {
     assert(pzPore?.value === 45.2, `Calibration applied for pore_pressure (got ${pzPore?.value})`);
 
     // ----------------------------------------------------
-    // NEGATIVE TEST 1: Unknown Device
+    // NEGATIVE TEST 1: Unknown Device / Auth Validation
     // ----------------------------------------------------
-    console.log('\n--- NEGATIVE TEST 1: Unknown Device ---');
-    const badDevRes = await fetch(ingestUrl, {
+    console.log('\n--- NEGATIVE TEST 1: Unknown Device / Auth Validation ---');
+    // 1a: Missing x-device-key header -> 401
+    const noKeyRes = await fetch(ingestUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        deviceCode: 'SNRS485-2026-0001',
+        timestamp: new Date().toISOString(),
+        readings: [{ slot: 1, values: { x_displacement: 1.0 } }]
+      })
+    });
+    const noKeyBody = await noKeyRes.json();
+    assert(noKeyRes.status === 401, `Missing x-device-key rejected with 401 (got ${noKeyRes.status})`);
+    assert(noKeyBody.message.includes('Missing x-device-key header'), `Error mentions missing header: ${noKeyBody.message}`);
+
+    // 1b: Device credential mismatch (key belongs to SNRS485, packet claims UNKNOWN-DEVICE) -> 403
+    const badDevRes = await fetch(ingestUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-device-key': dev1Key },
       body: JSON.stringify({
         deviceCode: 'UNKNOWN-DEVICE',
         timestamp: new Date().toISOString(),
@@ -170,8 +198,8 @@ async function runTests() {
       })
     });
     const badDevBody = await badDevRes.json();
-    assert(badDevRes.status === 404, `Unknown Device rejected with 404 (got ${badDevRes.status})`);
-    assert(badDevBody.message.includes('Unknown Device'), `Error message mentions Unknown Device: ${badDevBody.message}`);
+    assert(badDevRes.status === 403, `Device mismatch rejected with 403 (got ${badDevRes.status})`);
+    assert(badDevBody.message.includes('Device credential mismatch'), `Error message mentions Device credential mismatch: ${badDevBody.message}`);
 
     // ----------------------------------------------------
     // NEGATIVE TEST 2: Unknown Slot
@@ -179,7 +207,7 @@ async function runTests() {
     console.log('\n--- NEGATIVE TEST 2: Unknown Slot ---');
     const badSlotRes = await fetch(ingestUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-device-key': dev1Key },
       body: JSON.stringify({
         deviceCode: 'SNRS485-2026-0001',
         gatewayCode: 'GWLR-2026-0001',
@@ -197,7 +225,7 @@ async function runTests() {
     console.log('\n--- NEGATIVE TEST 3: Unknown Channel ---');
     const badChRes = await fetch(ingestUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-device-key': dev1Key },
       body: JSON.stringify({
         deviceCode: 'SNRS485-2026-0001',
         gatewayCode: 'GWLR-2026-0001',
@@ -217,7 +245,7 @@ async function runTests() {
     console.log('\n--- NEGATIVE TEST 4: Duplicate Packet Protection ---');
     const dupRes = await fetch(ingestUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-device-key': dev1Key },
       body: JSON.stringify(incPacket)
     });
     const dupBody = await dupRes.json();
@@ -234,7 +262,7 @@ async function runTests() {
     // Subcase 5a: Nonexistent gateway
     const wrongGwRes = await fetch(ingestUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-device-key': dev1Key },
       body: JSON.stringify({
         deviceCode: 'SNRS485-2026-0001',
         gatewayCode: 'GWLR-NONEXISTENT',
@@ -257,7 +285,7 @@ async function runTests() {
 
     const mismatchGwRes = await fetch(ingestUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-device-key': dev1Key },
       body: JSON.stringify({
         deviceCode: 'SNRS485-2026-0001',
         gatewayCode: 'GW-OTHER-TEMP',

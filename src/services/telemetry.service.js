@@ -81,9 +81,77 @@ function normalizeIncomingReadings(packet) {
  * Device resolution -> Gateway validation -> Slot/SensorDeviceMapping resolution
  * -> SensorChannel resolution -> Calibration -> Baseline -> Persistence -> LatestState
  */
-export async function ingestTelemetry(packet, { emit = () => {}, source = null } = {}) {
-  if (!packet || typeof packet !== 'object') {
+export async function ingestTelemetry(packet, { emit = () => {}, source = null, device: optionsDevice = null } = {}) {
+  if (!packet || typeof packet !== 'object' || Array.isArray(packet)) {
     throw new ApiError(400, 'Payload must be a JSON object');
+  }
+
+  const isGeneric = packet.schemaVersion !== undefined;
+
+  // Generic Telemetry Contract Validation (Schema Version 1)
+  if (isGeneric) {
+    if (packet.schemaVersion !== 1) {
+      throw new ApiError(400, `Unsupported schemaVersion: ${packet.schemaVersion}. Only schemaVersion 1 is supported.`);
+    }
+    if (!packet.deviceCode || typeof packet.deviceCode !== 'string' || !packet.deviceCode.trim()) {
+      throw new ApiError(400, 'deviceCode is required');
+    }
+    if (!packet.timestamp) {
+      throw new ApiError(400, 'timestamp is required');
+    }
+    if (!packet.messageId || typeof packet.messageId !== 'string' || !packet.messageId.trim()) {
+      throw new ApiError(400, 'messageId is required');
+    }
+    if (!Array.isArray(packet.readings) || packet.readings.length === 0) {
+      throw new ApiError(400, 'readings must be a non-empty array');
+    }
+    if (packet.sequenceNumber !== undefined && (typeof packet.sequenceNumber !== 'number' || !Number.isFinite(packet.sequenceNumber))) {
+      throw new ApiError(400, `sequenceNumber must be numeric (got: ${packet.sequenceNumber})`);
+    }
+    if (packet.health !== undefined && (typeof packet.health !== 'object' || packet.health === null || Array.isArray(packet.health))) {
+      throw new ApiError(400, 'health must be an object');
+    }
+
+    const seenSlots = new Set();
+    for (let i = 0; i < packet.readings.length; i++) {
+      const r = packet.readings[i];
+      if (!r || typeof r !== 'object' || Array.isArray(r)) {
+        throw new ApiError(400, `Reading at index ${i} must be an object`);
+      }
+      const slot = r.slot;
+      if (slot === undefined || slot === null || !Number.isInteger(slot) || slot < 1) {
+        throw new ApiError(400, `Each reading must contain a valid positive integer slot (got: ${slot})`);
+      }
+      if (seenSlots.has(slot)) {
+        throw new ApiError(400, `Duplicate slot ${slot} in readings array`);
+      }
+      seenSlots.add(slot);
+
+      if (!Array.isArray(r.channels) || r.channels.length === 0) {
+        throw new ApiError(400, `channels must be a non-empty array for slot ${slot}`);
+      }
+
+      const seenChannelsInSlot = new Set();
+      for (let j = 0; j < r.channels.length; j++) {
+        const ch = r.channels[j];
+        if (!ch || typeof ch !== 'object' || Array.isArray(ch)) {
+          throw new ApiError(400, `Channel entry at index ${j} in slot ${slot} must be an object`);
+        }
+        const codeKey = ch.channelCode || ch.code;
+        if (!codeKey || typeof codeKey !== 'string' || !codeKey.trim()) {
+          throw new ApiError(400, `channelCode must be a non-empty string in slot ${slot}`);
+        }
+        const normKey = codeKey.trim().toLowerCase();
+        if (seenChannelsInSlot.has(normKey)) {
+          throw new ApiError(400, `Duplicate channelCode '${codeKey}' in slot ${slot}`);
+        }
+        seenChannelsInSlot.add(normKey);
+
+        if (typeof ch.value !== 'number' || !Number.isFinite(ch.value)) {
+          throw new ApiError(400, `Non-numeric channel value rejected for channelCode '${codeKey}' in slot ${slot}: ${ch.value}`);
+        }
+      }
+    }
   }
 
   // 1. Resolve Device Identity
@@ -92,7 +160,16 @@ export async function ingestTelemetry(packet, { emit = () => {}, source = null }
     throw new ApiError(400, 'deviceCode (or deviceId) is required');
   }
 
-  const device = await Device.findOne({ deviceId: deviceCode });
+  let deviceDoc = optionsDevice;
+  if (deviceDoc) {
+    if (deviceDoc.deviceId && deviceDoc.deviceId.toLowerCase() !== deviceCode.toLowerCase()) {
+      throw new ApiError(403, `Device credential mismatch: authenticated device is '${deviceDoc.deviceId}', but packet specified '${deviceCode}'`);
+    }
+  } else {
+    deviceDoc = await Device.findOne({ deviceId: deviceCode });
+  }
+
+  const device = deviceDoc;
   if (!device) {
     throw new ApiError(404, `Unknown Device: ${deviceCode}`);
   }
@@ -178,166 +255,268 @@ export async function ingestTelemetry(packet, { emit = () => {}, source = null }
     await recordDeviceHealth(device, sampleTime, packet.health, emit);
   }
 
-  // 6. Normalize readings into slot groups
-  const slotGroups = normalizeIncomingReadings(packet);
-  if (!slotGroups.length) {
-    throw new ApiError(400, 'No telemetry readings supplied in packet');
-  }
-
   const errors = [];
   const createdRaw = [];
   const derived = [];
   const resolvedInstrumentIds = new Set();
+  const itemsToProcess = [];
 
-  // 7. Process each slot group
-  for (const { slot, values } of slotGroups) {
-    // 7a. Device -> SensorDeviceMapping resolution
-    const sdm = await SensorDeviceMapping.findOne({
-      projectId: project._id,
-      deviceAssetId: device._id,
-      'connection.slot': slot,
-      status: 'ACTIVE'
-    }).populate('sensorAssetId');
-
-    if (!sdm || !sdm.sensorAssetId) {
-      errors.push({
-        slot,
-        reason: 'UNKNOWN_SLOT',
-        message: `No active SensorDeviceMapping for device '${device.deviceId}' slot ${slot}`
-      });
-      continue;
-    }
-
-    const instrument = sdm.sensorAssetId;
-    if (instrument.status !== 'COMMISSIONED') {
-      errors.push({
-        slot,
-        instrumentCode: instrument.code,
-        reason: 'INSTRUMENT_NOT_COMMISSIONED',
-        message: `Instrument '${instrument.code}' is not COMMISSIONED (status: ${instrument.status})`
-      });
-      continue;
-    }
-    resolvedInstrumentIds.add(instrument._id.toString());
-
-    // 7b. Instrument -> SensorChannel resolution
-    const sensorChannels = await SensorChannel.find({
-      projectId: project._id,
-      instrumentId: instrument._id
-    });
-
-    if (!sensorChannels.length) {
-      errors.push({
-        slot,
-        instrumentCode: instrument.code,
-        reason: 'NO_SENSOR_CHANNELS',
-        message: `No SensorChannels found for instrument '${instrument.code}'`
-      });
-      continue;
-    }
-
-    // Build channel lookup map (code, sourceField, parameterCode)
-    const channelMap = new Map();
-    for (const ch of sensorChannels) {
-      if (ch.code) channelMap.set(ch.code.toLowerCase(), ch);
-      if (ch.sourceField) channelMap.set(ch.sourceField.toLowerCase(), ch);
-      if (ch.parameterCode) channelMap.set(ch.parameterCode.toLowerCase(), ch);
-    }
-
-    // 7c. Process channel values
-    for (const [channelKey, rawVal] of Object.entries(values)) {
-      const channel = channelMap.get(channelKey.toLowerCase());
-      if (!channel) {
-        errors.push({
-          slot,
-          channel: channelKey,
-          reason: 'UNKNOWN_CHANNEL',
-          message: `Unknown SensorChannel '${channelKey}' for instrument '${instrument.code}'`
-        });
-        // DO NOT silently invent schema or create channel
-        continue;
-      }
-
-      const numVal = Number(rawVal);
-      if (!Number.isFinite(numVal)) {
-        errors.push({
-          slot,
-          channel: channelKey,
-          reason: 'INVALID_NUMERIC',
-          message: `Invalid numeric value for channel '${channelKey}': ${rawVal}`
-        });
-        continue;
-      }
-
-      // Check required calibration configuration
-      if (channel.calibration?.required === true && !channel.calibration?.configured) {
-        errors.push({
-          slot,
-          channel: channelKey,
-          reason: 'CALIBRATION_NOT_CONFIGURED',
-          message: `Calibration required but not configured for channel '${channel.code}'`
-        });
-        continue;
-      }
-
-      // 7d. Calibration calculation
-      const scale = Number.isFinite(channel.calibration?.scale) ? channel.calibration.scale : 1;
-      const offset = Number.isFinite(channel.calibration?.offset) ? channel.calibration.offset : 0;
-      const engineeringValue = numVal * scale + offset;
-
-      // 7e. Baseline calculation (delta only when configured)
-      const deltaFromBaseline = channel.baseline?.configured === true
-        ? engineeringValue - (channel.baseline?.value ?? 0)
-        : null;
-
-      // Quality evaluation
-      const previousDerived = await DerivedReading.findOne({ channelId: channel._id })
-        .sort({ observedAt: -1 })
-        .lean();
-      const q = evaluateQuality({ rawValue: numVal, channel, sampleTime, previousDerived });
-
-      // 7f. Persist RawReading
-      const raw = await RawReading.create({
-        ingestionId: crypto.randomUUID(),
-        sourceEventId: packet.messageId || packet.sourceEventId,
-        organizationId: project.organizationId || device.organizationId,
+  if (isGeneric) {
+    // 6A. Generic Telemetry Resolution (Slot -> SensorDeviceMapping -> Instrument -> SensorChannel.code)
+    for (const r of packet.readings) {
+      const slot = r.slot;
+      const sdm = await SensorDeviceMapping.findOne({
         projectId: project._id,
-        deviceId: device._id,
-        instrumentId: instrument._id,
-        channelId: channel._id,
-        channelCode: channel.code,
-        sampleTime,
-        serverReceivedAt: new Date(),
-        messageId: packet.messageId ? String(packet.messageId) : undefined,
-        sequenceNumber: packet.sequenceNumber,
-        rawValue: numVal,
-        rawUnit: channel.rawUnit,
-        quality: q.quality,
-        qualityReasons: q.reasons,
-        parserVersion: packet.parserVersion || '1.0',
-        sourceMetadata: {
-          source: sourceTag,
-          transport: device.transport,
-          gatewayCode: gwCode || undefined,
-          slot
-        },
-        originalPacket: packet
-      });
-      createdRaw.push(raw);
+        deviceAssetId: device._id,
+        'connection.slot': slot,
+        status: 'ACTIVE'
+      }).populate('sensorAssetId');
 
-      // 7g. Persist DerivedReading
-      if (q.quality !== 'INVALID') {
-        const derivedDoc = await deriveChannelReading({
-          rawReading: raw,
-          channel,
-          sourceTag
+      if (!sdm || !sdm.sensorAssetId) {
+        throw new ApiError(400, `Telemetry ingestion rejected: No active SensorDeviceMapping for device '${device.deviceId}' slot ${slot}`, {
+          errors: [{
+            slot,
+            reason: 'UNKNOWN_SLOT',
+            message: `No active SensorDeviceMapping for device '${device.deviceId}' slot ${slot}`
+          }]
         });
-        derived.push(derivedDoc);
+      }
+
+      const instrument = sdm.sensorAssetId;
+      if (instrument.status !== 'COMMISSIONED') {
+        throw new ApiError(400, `Telemetry ingestion rejected: Instrument '${instrument.code}' is not COMMISSIONED (status: ${instrument.status})`, {
+          errors: [{
+            slot,
+            instrumentCode: instrument.code,
+            reason: 'INSTRUMENT_NOT_COMMISSIONED',
+            message: `Instrument '${instrument.code}' is not COMMISSIONED (status: ${instrument.status})`
+          }]
+        });
+      }
+
+      const sensorChannels = await SensorChannel.find({
+        projectId: project._id,
+        instrumentId: instrument._id
+      });
+
+      if (!sensorChannels.length) {
+        throw new ApiError(400, `Telemetry ingestion rejected: No SensorChannels found for instrument '${instrument.code}'`, {
+          errors: [{
+            slot,
+            instrumentCode: instrument.code,
+            reason: 'NO_SENSOR_CHANNELS',
+            message: `No SensorChannels found for instrument '${instrument.code}'`
+          }]
+        });
+      }
+
+      // 7b. Instrument -> SensorChannel resolution by code
+      const codeChannelMap = new Map();
+      for (const sc of sensorChannels) {
+        if (sc.code) {
+          codeChannelMap.set(sc.code.trim().toLowerCase(), sc);
+        }
+      }
+
+      for (const ch of r.channels) {
+        const codeKey = (ch.channelCode || ch.code || '').trim();
+        const channel = codeChannelMap.get(codeKey.toLowerCase());
+        if (!channel) {
+          throw new ApiError(400, `Telemetry ingestion rejected: Unknown SensorChannel code '${codeKey}' for instrument '${instrument.code}'`, {
+            errors: [{
+              slot,
+              channelCode: codeKey,
+              reason: 'UNKNOWN_CHANNEL',
+              message: `Unknown SensorChannel code '${codeKey}' for instrument '${instrument.code}'`
+            }]
+          });
+        }
+
+        if (channel.calibration?.required === true && !channel.calibration?.configured) {
+          throw new ApiError(400, `Telemetry ingestion rejected: Calibration required but not configured for channel '${channel.code}'`, {
+            errors: [{
+              slot,
+              channelCode: channel.code,
+              reason: 'CALIBRATION_NOT_CONFIGURED',
+              message: `Calibration required but not configured for channel '${channel.code}'`
+            }]
+          });
+        }
+
+        itemsToProcess.push({
+          slot,
+          instrument,
+          channel,
+          numVal: ch.value,
+          qualityOverride: ch.quality
+        });
+      }
+    }
+  } else {
+    // 6B. Legacy Telemetry Normalization & Resolution
+    const slotGroups = normalizeIncomingReadings(packet);
+    if (!slotGroups.length) {
+      throw new ApiError(400, 'No telemetry readings supplied in packet');
+    }
+
+    for (const { slot, values } of slotGroups) {
+      const sdm = await SensorDeviceMapping.findOne({
+        projectId: project._id,
+        deviceAssetId: device._id,
+        'connection.slot': slot,
+        status: 'ACTIVE'
+      }).populate('sensorAssetId');
+
+      if (!sdm || !sdm.sensorAssetId) {
+        errors.push({
+          slot,
+          reason: 'UNKNOWN_SLOT',
+          message: `No active SensorDeviceMapping for device '${device.deviceId}' slot ${slot}`
+        });
+        continue;
+      }
+
+      const instrument = sdm.sensorAssetId;
+      if (instrument.status !== 'COMMISSIONED') {
+        errors.push({
+          slot,
+          instrumentCode: instrument.code,
+          reason: 'INSTRUMENT_NOT_COMMISSIONED',
+          message: `Instrument '${instrument.code}' is not COMMISSIONED (status: ${instrument.status})`
+        });
+        continue;
+      }
+
+      const sensorChannels = await SensorChannel.find({
+        projectId: project._id,
+        instrumentId: instrument._id
+      });
+
+      if (!sensorChannels.length) {
+        errors.push({
+          slot,
+          instrumentCode: instrument.code,
+          reason: 'NO_SENSOR_CHANNELS',
+          message: `No SensorChannels found for instrument '${instrument.code}'`
+        });
+        continue;
+      }
+
+      const channelMap = new Map();
+      for (const ch of sensorChannels) {
+        if (ch.code) channelMap.set(ch.code.toLowerCase(), ch);
+        if (ch.sourceField) channelMap.set(ch.sourceField.toLowerCase(), ch);
+        if (ch.parameterCode) channelMap.set(ch.parameterCode.toLowerCase(), ch);
+      }
+
+      for (const [channelKey, rawVal] of Object.entries(values)) {
+        const channel = channelMap.get(channelKey.toLowerCase());
+        if (!channel) {
+          errors.push({
+            slot,
+            channel: channelKey,
+            reason: 'UNKNOWN_CHANNEL',
+            message: `Unknown SensorChannel '${channelKey}' for instrument '${instrument.code}'`
+          });
+          continue;
+        }
+
+        const numVal = Number(rawVal);
+        if (!Number.isFinite(numVal)) {
+          errors.push({
+            slot,
+            channel: channelKey,
+            reason: 'INVALID_NUMERIC',
+            message: `Invalid numeric value for channel '${channelKey}': ${rawVal}`
+          });
+          continue;
+        }
+
+        if (channel.calibration?.required === true && !channel.calibration?.configured) {
+          errors.push({
+            slot,
+            channel: channelKey,
+            reason: 'CALIBRATION_NOT_CONFIGURED',
+            message: `Calibration required but not configured for channel '${channel.code}'`
+          });
+          continue;
+        }
+
+        itemsToProcess.push({
+          slot,
+          instrument,
+          channel,
+          numVal,
+          qualityOverride: null
+        });
       }
     }
   }
 
-  // 8. If nothing was created, handle controlled rejection
+  // 7. Authoritative Pipeline: Calibration -> Baseline -> Persistence -> Quality
+  for (const item of itemsToProcess) {
+    const { slot, instrument, channel, numVal, qualityOverride } = item;
+    resolvedInstrumentIds.add(instrument._id.toString());
+
+    // 7d. Calibration calculation
+    const scale = Number.isFinite(channel.calibration?.scale) ? channel.calibration.scale : 1;
+    const offset = Number.isFinite(channel.calibration?.offset) ? channel.calibration.offset : 0;
+    const engineeringValue = numVal * scale + offset;
+
+    // 7e. Baseline calculation (delta only when configured)
+    const deltaFromBaseline = channel.baseline?.configured === true
+      ? engineeringValue - (channel.baseline?.value ?? 0)
+      : null;
+
+    // Quality evaluation
+    const previousDerived = await DerivedReading.findOne({ channelId: channel._id })
+      .sort({ observedAt: -1 })
+      .lean();
+    const q = evaluateQuality({ rawValue: numVal, channel, sampleTime, previousDerived });
+    const finalQuality = qualityOverride || q.quality;
+    const finalQualityReasons = q.reasons;
+
+    // 7f. Persist RawReading
+    const raw = await RawReading.create({
+      ingestionId: crypto.randomUUID(),
+      sourceEventId: packet.messageId || packet.sourceEventId,
+      organizationId: project.organizationId || device.organizationId,
+      projectId: project._id,
+      deviceId: device._id,
+      instrumentId: instrument._id,
+      channelId: channel._id,
+      channelCode: channel.code,
+      sampleTime,
+      serverReceivedAt: new Date(),
+      messageId: packet.messageId ? String(packet.messageId) : undefined,
+      sequenceNumber: packet.sequenceNumber,
+      rawValue: numVal,
+      rawUnit: channel.rawUnit,
+      quality: finalQuality,
+      qualityReasons: finalQualityReasons,
+      parserVersion: packet.schemaVersion ? `generic-v${packet.schemaVersion}` : (packet.parserVersion || '1.0'),
+      sourceMetadata: {
+        source: sourceTag,
+        transport: device.transport,
+        gatewayCode: gwCode || undefined,
+        slot
+      },
+      originalPacket: packet
+    });
+    createdRaw.push(raw);
+
+    // 7g. Persist DerivedReading
+    if (finalQuality !== 'INVALID') {
+      const derivedDoc = await deriveChannelReading({
+        rawReading: raw,
+        channel,
+        sourceTag
+      });
+      derived.push(derivedDoc);
+    }
+  }
+
+  // 8. If nothing was created, handle controlled rejection (Legacy convention)
   if (createdRaw.length === 0) {
     if (errors.length > 0) {
       const summaryMsg = errors.map((e) => e.message).join('; ');

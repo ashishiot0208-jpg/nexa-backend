@@ -10,6 +10,7 @@ import {
 import { requireAuth, requireProjectAccess, requireProjectPermission } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async-handler.js';
 import { ApiError } from '../utils/api-error.js';
+import { randomToken, sha256 } from '../utils/crypto.js';
 import { audit } from '../services/audit.service.js';
 import { 
   validateProjectCommissioning, 
@@ -1471,15 +1472,26 @@ router.put('/projects/:projectId/commissioning/sensors/:instrumentId/setup', req
 
   // Upsert channels for this instrument
   const savedChannels = [];
+  const seenChannelCodes = new Set();
   for (const ch of channels) {
-    if (!ch.code) continue;
-    let channelDoc = await SensorChannel.findOne({ instrumentId: instrument._id, code: ch.code });
+    if (!ch.code || typeof ch.code !== 'string') continue;
+    const lower = ch.code.trim().toLowerCase();
+    if (seenChannelCodes.has(lower)) {
+      throw new ApiError(400, `Duplicate channel code '${ch.code}' specified in sensor setup`);
+    }
+    seenChannelCodes.add(lower);
+
+    const escaped = ch.code.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let channelDoc = await SensorChannel.findOne({
+      instrumentId: instrument._id,
+      code: { $regex: new RegExp(`^${escaped}$`, 'i') }
+    });
     if (!channelDoc) {
       channelDoc = new SensorChannel({
         organizationId: instrument.organizationId,
         projectId: instrument.projectId,
         instrumentId: instrument._id,
-        code: ch.code
+        code: ch.code.trim()
       });
     }
 

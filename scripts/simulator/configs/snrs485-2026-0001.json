@@ -1,0 +1,46 @@
+{
+  "deviceCode": "SNRS485-2026-0001",
+  "gatewayCode": "GWLR-2026-0001",
+  "intervalMs": 10000,
+  "scenario": "NORMAL",
+  "health": {
+    "batteryV": 3.92,
+    "rssiDbm": -78,
+    "network": "LoRaWAN",
+    "internalTempC": 30.5,
+    "faultBits": []
+  },
+  "slots": [
+   {
+  "slot": 1,
+  "channels": [
+    {
+      "channelCode": "x_displacement",
+      "generator": {
+        "type": "gradual_rise",
+        "initial": 2.0,
+        "step": 0.5,
+        "max": 9.0
+      }
+    },
+    {
+      "channelCode": "y_displacement",
+      "generator": {
+        "type": "gradual_rise",
+        "initial": 1.0,
+        "step": 0.2,
+        "max": 4.0
+      }
+    },
+    {
+      "channelCode": "temperature",
+      "generator": {
+        "type": "stable",
+        "baseline": 27.0,
+        "noise": 0.5
+      }
+    }
+  ]
+}
+  ]
+}

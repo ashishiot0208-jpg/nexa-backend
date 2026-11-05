@@ -68,7 +68,18 @@ router.get('/projects/:projectId/instruments', requireProjectAccess, requireProj
 router.post('/projects/:projectId/instruments', requireProjectAccess, asyncHandler(async (req, res) => {
   const catalog = await InstrumentCatalog.findOne({ code: String(req.body.catalogCode || '').toUpperCase() }); if (!catalog) throw new ApiError(400, 'Instrument catalogue item not found');
   const instrument = await Instrument.create({ organizationId: req.auth.organizationId, projectId: req.params.projectId, siteId: req.body.siteId, zoneId: req.body.zoneId, catalogCode: catalog.code, name: req.body.name || catalog.name, code: req.body.code, serial: req.body.serial, coordinates: req.body.coordinates, orientationDeg: req.body.orientationDeg, depthM: req.body.depthM, status: 'PLANNED', metadata: req.body.metadata || {} });
-  for (const ch of req.body.channels || catalog.defaultChannels || []) await SensorChannel.create({ organizationId: req.auth.organizationId, projectId: req.params.projectId, instrumentId: instrument._id, deviceId: ch.deviceId, code: ch.code, sourceField: ch.sourceField || ch.code, parameterCode: ch.parameterCode, rawUnit: ch.rawUnit, engineeringUnit: ch.engineeringUnit, sampleIntervalSec: ch.sampleIntervalSec || 900, calibration: ch.calibration || { scale:1,offset:0,version:1 }, baseline: ch.baseline || { value:0,version:1 }, qualityConfig: ch.qualityConfig || {} });
+  const rawChannels = req.body.channels || catalog.defaultChannels || [];
+  const seenCodes = new Set();
+  for (const ch of rawChannels) {
+    const codeStr = String(ch.code || '').trim();
+    if (!codeStr) continue;
+    const lower = codeStr.toLowerCase();
+    if (seenCodes.has(lower)) {
+      throw new ApiError(400, `Duplicate channel code '${ch.code}' specified for instrument`);
+    }
+    seenCodes.add(lower);
+    await SensorChannel.create({ organizationId: req.auth.organizationId, projectId: req.params.projectId, instrumentId: instrument._id, deviceId: ch.deviceId, code: ch.code, sourceField: ch.sourceField || ch.code, parameterCode: ch.parameterCode, rawUnit: ch.rawUnit, engineeringUnit: ch.engineeringUnit, sampleIntervalSec: ch.sampleIntervalSec || 900, calibration: ch.calibration || { scale:1,offset:0,version:1 }, baseline: ch.baseline || { value:0,version:1 }, qualityConfig: ch.qualityConfig || {} });
+  }
   await Project.updateOne({ _id: req.params.projectId, setupStatus: 'SETUP_REQUIRED' }, { $set: { setupStatus: 'COMMISSIONING' } });
   await audit({ req, projectId: req.params.projectId, action: 'INSTRUMENT_CREATED', resourceType: 'Instrument', resourceId: instrument._id, newState: instrument.toObject() });
   res.status(201).json(instrument);
@@ -117,5 +128,17 @@ router.post('/projects/:projectId/devices', requireProjectAccess, requireProject
 }));
 router.post('/devices/:id/rotate-key', asyncHandler(async (req, res) => { const device = await Device.findOne({ _id: req.params.id, organizationId: req.auth.organizationId }); if (!device) throw new ApiError(404,'Device not found'); await ensureProjectAccess(req, device.projectId); const key=`gxn_${randomToken(16)}`; device.apiKeyHash=sha256(key); device.apiKeyPrefix=key.slice(0,10); await device.save(); await audit({ req, projectId:device.projectId, action:'DEVICE_KEY_ROTATED', resourceType:'Device', resourceId:device._id }); res.json({ deviceId:device.deviceId, apiKey:key }); }));
 router.patch('/channels/:id/device', asyncHandler(async (req, res) => { const ch=await SensorChannel.findOne({_id:req.params.id,organizationId:req.auth.organizationId}); if(!ch) throw new ApiError(404,'Channel not found'); await ensureProjectAccess(req, ch.projectId); ch.deviceId=req.body.deviceId||undefined; await ch.save(); res.json(ch); }));
+router.patch('/channels/:id', asyncHandler(async (req, res) => {
+  const ch = await SensorChannel.findOne({ _id: req.params.id, organizationId: req.auth.organizationId });
+  if (!ch) throw new ApiError(404, 'Channel not found');
+  await ensureProjectAccess(req, ch.projectId);
+  if (req.body.parameterCode !== undefined) ch.parameterCode = req.body.parameterCode;
+  if (req.body.engineeringUnit !== undefined) ch.engineeringUnit = req.body.engineeringUnit;
+  if (req.body.rawUnit !== undefined) ch.rawUnit = req.body.rawUnit;
+  if (req.body.calibration !== undefined) ch.calibration = req.body.calibration;
+  if (req.body.baseline !== undefined) ch.baseline = req.body.baseline;
+  await ch.save();
+  res.json(ch);
+}));
 
 export default router;

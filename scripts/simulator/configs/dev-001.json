@@ -1,0 +1,66 @@
+{
+  "deviceCode": "DEV-001",
+  "gatewayCode": "GW-001",
+  "intervalMs": 10000,
+  "scenario": "NORMAL",
+  "health": {
+    "batteryV": 3.92,
+    "rssiDbm": -78,
+    "network": "4G",
+    "internalTempC": 31.5,
+    "faultBits": []
+  },
+  "slots": [
+    {
+      "slot": 1,
+      "channels": [
+        {
+          "channelCode": "X_DISP",
+          "generator": {
+            "type": "stable",
+            "baseline": 2.5,
+            "noise": 0.05
+          }
+        },
+        {
+          "channelCode": "Y_DISP",
+          "generator": {
+            "type": "stable",
+            "baseline": 1.1,
+            "noise": 0.03
+          }
+        },
+        {
+          "channelCode": "TEMP",
+          "generator": {
+            "type": "range",
+            "min": 25.0,
+            "max": 28.5
+          }
+        }
+      ]
+    },
+    {
+      "slot": 2,
+      "channels": [
+        {
+          "channelCode": "PORE_PRESSURE",
+          "generator": {
+            "type": "stable",
+            "baseline": 42.6,
+            "noise": 0.2
+          }
+        },
+        {
+          "channelCode": "TEMP",
+          "generator": {
+            "type": "range",
+            "min": 22.0,
+            "max": 25.0
+          }
+        }
+      ]
+    }
+  ]
+}
+
