@@ -3,6 +3,20 @@ import { getProjectOperationalSummaries } from './instrument-summary.service.js'
 import { maxHealth } from '../utils/severity.js';
 import { deriveOperationalStatus } from './decision-status.service.js';
 
+/**
+ * Maps channel parameterCode or code to a standard concise industrial label
+ * (e.g. 'x_displacement' -> 'X', 'pore_pressure' -> 'Pore', 'temperature' -> 'Temp')
+ */
+function getChannelShortLabel(paramOrCode, label) {
+  const s = String(paramOrCode || label || '').toLowerCase();
+  if (s.includes('x_disp') || s === 'x_displacement' || s === 'inc_x') return 'X';
+  if (s.includes('y_disp') || s === 'y_displacement' || s === 'inc_y') return 'Y';
+  if (s.includes('pore_pressure') || s.includes('pore') || s.includes('pressure')) return 'Pore';
+  if (s.includes('temperature') || s.includes('temp')) return 'Temp';
+  if (s.includes('resultant')) return 'Res';
+  return label || paramOrCode || '—';
+}
+
 export async function getProjectOverview(projectId, organizationId = null) {
   const query = { _id: projectId };
   if (organizationId) query.organizationId = organizationId;
@@ -216,19 +230,52 @@ export async function getProjectOverview(projectId, organizationId = null) {
   // Real Reporting Instruments Summary
   const latestReadings = summaries
     .filter(s => s.latest?.engineeringValue !== null || s.latest?.rawValue !== null)
-    .map(s => ({
-      instrumentId: s.instrument._id,
-      code: s.instrument.code,
-      name: s.instrument.name,
-      parameter: s.latest.channelLabel || s.latest.parameterCode,
-      parameterCode: s.latest.parameterCode,
-      value: s.latest.engineeringValue ?? s.latest.rawValue,
-      unit: s.latest.unit,
-      quality: s.operational.quality,
-      severity: s.operational.severity,
-      health: s.operational.health,
-      observedAt: s.latest.timestamp
-    }));
+    .map(s => {
+      const rawChannels = (s.channels && s.channels.length > 0)
+        ? s.channels.map(ch => {
+            const state = s.channelStates?.[ch.code] || s.channelStates?.[ch.parameterCode] || {};
+            const val = state.value !== null && state.value !== undefined ? state.value : null;
+            return {
+              code: ch.code,
+              parameterCode: ch.parameterCode || state.parameterCode,
+              label: state.label || ch.label || ch.code,
+              shortLabel: getChannelShortLabel(ch.parameterCode || ch.code, state.label || ch.label),
+              value: val,
+              unit: state.unit || ch.engineeringUnit || ch.rawUnit || '',
+              quality: state.quality || 'NOT EVALUATED',
+              severity: state.severity || 'NOT EVALUATED',
+              observedAt: state.observedAt || null
+            };
+          })
+        : Object.values(s.channelStates || {}).map(state => ({
+            code: state.code,
+            parameterCode: state.parameterCode,
+            label: state.label || state.code,
+            shortLabel: getChannelShortLabel(state.parameterCode || state.code, state.label),
+            value: state.value !== null && state.value !== undefined ? state.value : null,
+            unit: state.unit || '',
+            quality: state.quality || 'NOT EVALUATED',
+            severity: state.severity || 'NOT EVALUATED',
+            observedAt: state.observedAt || null
+          }));
+
+      const channels = rawChannels.filter(c => c.value !== null && c.value !== undefined);
+
+      return {
+        instrumentId: s.instrument._id,
+        code: s.instrument.code,
+        name: s.instrument.name,
+        parameter: s.latest.channelLabel || s.latest.parameterCode,
+        parameterCode: s.latest.parameterCode,
+        value: s.latest.engineeringValue ?? s.latest.rawValue,
+        unit: s.latest.unit,
+        quality: s.operational.quality,
+        severity: s.operational.severity,
+        health: s.operational.health,
+        observedAt: s.latest.timestamp,
+        channels
+      };
+    });
 
   // Real Telemetry Trend History aligned by minute
   const timeBuckets = new Map();
