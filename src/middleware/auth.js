@@ -65,18 +65,25 @@ export function requireOrgRole(...roles) {
 
 export async function requireProjectAccess(req, _res, next) {
   try {
-    const projectId = req.params.projectId || req.params.id || req.body?.projectId || req.query?.projectId;
-    if (!projectId) throw new ApiError(400, 'Project id is required');
+    const rawProjectId = req.params.projectId || req.params.id || req.body?.projectId || req.query?.projectId;
+    if (!rawProjectId) throw new ApiError(400, 'Project id is required');
 
-    const project = await Project.findById(projectId).select('organizationId accessMode').lean();
+    const isObjectId = mongoose.Types.ObjectId.isValid(rawProjectId);
+    const project = isObjectId
+      ? await Project.findById(rawProjectId).select('organizationId accessMode').lean()
+      : await Project.findOne({ code: String(rawProjectId).toUpperCase() }).select('organizationId accessMode').lean();
+
     if (!project) throw new ApiError(404, 'Project not found');
+    req.project = project;
+    req.projectId = project._id.toString();
+    if (req.params.projectId) req.params.projectId = project._id.toString();
     req.projectAccessMode = project.accessMode || 'ROLE_BASED';
 
     if (req.auth.organizationRole === 'ADMINISTRATOR') {
       req.projectRole = 'ADMINISTRATOR';
       return next();
     }
-    const membership = await ProjectMember.findOne({ projectId, userId: req.auth.userId, status: 'ACTIVE' }).lean();
+    const membership = await ProjectMember.findOne({ projectId: project._id, userId: req.auth.userId, status: 'ACTIVE' }).lean();
     if (!membership) throw new ApiError(403, 'No access to this project');
     req.projectRole = membership.role;
     next();
@@ -99,27 +106,40 @@ export async function requireProjectAccess(req, _res, next) {
 export function requireProjectPermission(permissionKey) {
   return async (req, _res, next) => {
     try {
-      const projectId = req.params.projectId || req.params.id || req.body?.projectId || req.query?.projectId;
-      if (!projectId) throw new ApiError(400, 'Project id is required');
+      const rawProjectId = req.params.projectId || req.params.id || req.body?.projectId || req.query?.projectId;
+      if (!rawProjectId) throw new ApiError(400, 'Project id is required');
+
+      const isObjectId = mongoose.Types.ObjectId.isValid(rawProjectId);
+      const findProj = () => isObjectId
+        ? Project.findById(rawProjectId).select('organizationId accessMode').lean()
+        : Project.findOne({ code: String(rawProjectId).toUpperCase() }).select('organizationId accessMode').lean();
 
       let project = null;
       if (!req.projectRole) {
-        project = await Project.findById(projectId).select('organizationId accessMode').lean();
+        project = await findProj();
         if (!project) throw new ApiError(404, 'Project not found');
+        req.project = project;
+        req.projectId = project._id.toString();
+        if (req.params.projectId) req.params.projectId = project._id.toString();
         req.projectAccessMode = project.accessMode || 'ROLE_BASED';
 
         if (req.auth?.organizationRole === 'ADMINISTRATOR') {
           req.projectRole = 'ADMINISTRATOR';
         } else {
-          const membership = await ProjectMember.findOne({ projectId, userId: req.auth?.userId, status: 'ACTIVE' }).lean();
+          const membership = await ProjectMember.findOne({ projectId: project._id, userId: req.auth?.userId, status: 'ACTIVE' }).lean();
           if (!membership) throw new ApiError(403, 'No access to this project');
           req.projectRole = membership.role;
         }
       } else if (!req.projectAccessMode) {
-        project = await Project.findById(projectId).select('organizationId accessMode').lean();
+        project = await findProj();
         if (!project) throw new ApiError(404, 'Project not found');
+        req.project = project;
+        req.projectId = project._id.toString();
+        if (req.params.projectId) req.params.projectId = project._id.toString();
         req.projectAccessMode = project.accessMode || 'ROLE_BASED';
       }
+
+      const projectId = req.projectId || project?._id?.toString() || rawProjectId;
 
       // STEP 2: Administrator override check (Full Project Access)
       const isAdministrator = req.auth?.organizationRole === 'ADMINISTRATOR' || req.projectRole === 'ADMINISTRATOR';

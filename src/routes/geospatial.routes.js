@@ -31,7 +31,7 @@ router.get('/projects/:projectId/geospatial', requireProjectAccess, requireProje
 
   const { projectId } = req.params;
 
-  const project = await Project.findById(projectId).lean();
+  const project = req.project || await Project.findById(projectId).lean();
   if (!project) {
     clearTimeout(timer);
     throw new ApiError(404, 'Project not found');
@@ -153,7 +153,7 @@ router.get('/projects/:projectId/map/instruments', requireProjectAccess, require
   const { projectId } = req.params;
   const organizationId = req.auth.organizationId;
 
-  const project = await Project.findOne({ _id: projectId, organizationId }).lean();
+  const project = req.project || await Project.findOne({ _id: projectId, organizationId }).lean();
   if (!project) {
     throw new ApiError(404, 'Project not found');
   }
@@ -219,7 +219,7 @@ router.get('/projects/:projectId/map/assets', requireProjectAccess, requireProje
   const { projectId } = req.params;
   const organizationId = req.auth.organizationId;
 
-  const project = await Project.findOne({ _id: projectId, organizationId }).lean();
+  const project = req.project || await Project.findOne({ _id: projectId, organizationId }).lean();
   if (!project) {
     throw new ApiError(404, 'Project not found');
   }
