@@ -143,6 +143,16 @@ export const PERMISSION_GROUPS = [
       { key: 'administration.manageTeams', label: 'Manage Teams', description: 'Create, update and configure teams and team members' },
       { key: 'administration.manageAccess', label: 'Manage Project Access', description: 'Assign teams to projects and grant permission profiles' }
     ]
+  },
+  {
+    id: 'CORRELATION',
+    label: 'Correlation Studio',
+    description: 'Cross-sensor correlation analysis, lag search and multi-instrument verification',
+    permissions: [
+      { key: 'correlation.view', label: 'View Correlation Models', description: 'View correlation workflows, nodes and analysis results' },
+      { key: 'correlation.configure', label: 'Configure Correlation Models', description: 'Create and edit correlation graphs, nodes and backtests' },
+      { key: 'correlation.activate', label: 'Activate Correlation Models', description: 'Submit, approve and activate correlation models' }
+    ]
   }
 ];
 
@@ -179,7 +189,10 @@ export const ACCESS_PROFILES = {
       'investigations.addFinding',
       'investigations.complete',
       'reports.view',
-      'reports.export'
+      'reports.export',
+      'correlation.view',
+      'correlation.configure',
+      'correlation.activate'
     ]
   },
   MONITORING_OPERATIONS: {
@@ -198,7 +211,8 @@ export const ACCESS_PROFILES = {
       'investigations.view',
       'investigations.addFinding',
       'reports.view',
-      'reports.export'
+      'reports.export',
+      'correlation.view'
     ]
   },
   COMMISSIONING: {
@@ -249,7 +263,8 @@ export const ACCESS_PROFILES = {
       'alarms.view',
       'investigations.view',
       'reports.view',
-      'reports.export'
+      'reports.export',
+      'correlation.view'
     ]
   },
   CUSTOM: {
@@ -291,7 +306,10 @@ export const ROLE_PRESETS = {
     'tasks.view',
     'tasks.start',
     'tasks.update',
-    'tasks.complete'
+    'tasks.complete',
+    'correlation.view',
+    'correlation.configure',
+    'correlation.activate'
   ],
   OPERATOR: [
     'overview.view',
@@ -310,7 +328,8 @@ export const ROLE_PRESETS = {
     'tasks.view',
     'tasks.start',
     'tasks.update',
-    'tasks.complete'
+    'tasks.complete',
+    'correlation.view'
   ],
   VIEWER: [
     'overview.view',
@@ -323,7 +342,8 @@ export const ROLE_PRESETS = {
     'alarms.view',
     'investigations.view',
     'reports.view',
-    'tasks.view'
+    'tasks.view',
+    'correlation.view'
   ]
 };
 
