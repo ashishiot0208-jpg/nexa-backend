@@ -1,46 +1,77 @@
 {
   "deviceCode": "SNRS485-2026-0001",
+  "apiKey": "gxn_test_key_snrs485_0001",
   "gatewayCode": "GWLR-2026-0001",
   "intervalMs": 10000,
   "scenario": "NORMAL",
   "health": {
     "batteryV": 3.92,
-    "rssiDbm": -78,
+    "rssiDbm": -76,
     "network": "LoRaWAN",
-    "internalTempC": 30.5,
+    "internalTempC": 30.2,
     "faultBits": []
   },
   "slots": [
-   {
-  "slot": 1,
-  "channels": [
     {
-      "channelCode": "x_displacement",
-      "generator": {
-        "type": "gradual_rise",
-        "initial": 2.0,
-        "step": 0.5,
-        "max": 9.0
-      }
+      "slot": 1,
+      "channels": [
+        {
+          "channelCode": "x_displacement",
+          "generator": {
+            "type": "gradual_rise",
+            "initial": 2.0,
+            "step": 0.2,
+            "max": 9.0
+          }
+        },
+        {
+          "channelCode": "y_displacement",
+          "generator": {
+            "type": "gradual_rise",
+            "initial": 1.0,
+            "step": 0.1,
+            "max": 5.0
+          }
+        },
+        {
+          "channelCode": "temperature",
+          "generator": {
+            "type": "stable",
+            "baseline": 27.0,
+            "noise": 0.5
+          }
+        }
+      ]
     },
     {
-      "channelCode": "y_displacement",
-      "generator": {
-        "type": "gradual_rise",
-        "initial": 1.0,
-        "step": 0.2,
-        "max": 4.0
-      }
-    },
-    {
-      "channelCode": "temperature",
-      "generator": {
-        "type": "stable",
-        "baseline": 27.0,
-        "noise": 0.5
-      }
+      "slot": 2,
+      "channels": [
+        {
+          "channelCode": "x_displacement",
+          "generator": {
+            "type": "gradual_rise",
+            "initial": 1.2,
+            "step": 0.1,
+            "max": 6.0
+          }
+        },
+        {
+          "channelCode": "y_displacement",
+          "generator": {
+            "type": "range",
+            "min": 0.5,
+            "max": 2.5
+          }
+        },
+        {
+          "channelCode": "temperature",
+          "generator": {
+            "type": "stable",
+            "baseline": 26.5,
+            "noise": 0.4
+          }
+        }
+      ]
     }
-  ]
-}
   ]
 }

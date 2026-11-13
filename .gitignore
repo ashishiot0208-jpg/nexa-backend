@@ -7,3 +7,4 @@ coverage/
 uploads/*
 !uploads/.gitkeep
 .mongo-data/
+.simulator-state*.json

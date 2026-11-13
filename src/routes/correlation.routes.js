@@ -64,8 +64,9 @@ router.get(
   requireProjectAccess,
   requireProjectPermission('correlation.view'),
   asyncHandler(async (req, res) => {
+    const projectId = req.project?._id || req.projectId || req.params.projectId;
     const list = await CorrelationModel.find({
-      projectId: req.params.projectId,
+      projectId,
       organizationId: req.auth.organizationId
     })
       .sort({ updatedAt: -1 })
@@ -80,8 +81,12 @@ router.get(
   requireProjectAccess,
   requireProjectPermission('correlation.view'),
   asyncHandler(async (req, res) => {
-    const devices = await Device.find({ projectId: req.params.projectId })
-      .select('deviceId name model transport status lastBatteryV lastRssiDbm')
+    const projectId = req.project?._id || req.projectId || req.params.projectId;
+    const devices = await Device.find({ 
+      projectId, 
+      status: { $ne: 'DECOMMISSIONED' } 
+    })
+      .select('_id deviceId name model transport status lastBatteryV lastRssiDbm projectId')
       .sort({ deviceId: 1 })
       .lean();
     res.json(devices);
@@ -94,8 +99,12 @@ router.get(
   requireProjectAccess,
   requireProjectPermission('correlation.view'),
   asyncHandler(async (req, res) => {
-    const gateways = await ProjectGateway.find({ projectId: req.params.projectId })
-      .select('gatewayId name model status activeBackhaul updatedAt')
+    const projectId = req.project?._id || req.projectId || req.params.projectId;
+    const gateways = await ProjectGateway.find({ 
+      projectId, 
+      status: { $ne: 'DECOMMISSIONED' } 
+    })
+      .select('_id gatewayId name model status activeBackhaul updatedAt projectId')
       .sort({ gatewayId: 1 })
       .lean();
     res.json(gateways);
@@ -124,9 +133,10 @@ router.get(
   requireProjectAccess,
   requireProjectPermission('correlation.view'),
   asyncHandler(async (req, res) => {
+    const projectId = req.project?._id || req.projectId || req.params.projectId;
     const model = await CorrelationModel.findOne({
       _id: req.params.id,
-      projectId: req.params.projectId,
+      projectId,
       organizationId: req.auth.organizationId
     }).lean();
     if (!model) throw new ApiError(404, 'Correlation model not found');
@@ -175,9 +185,10 @@ router.post(
     const graph = req.body.graphJson || { nodes: [], edges: [] };
     const validation = validateGraph(graph);
 
+    const projectId = req.project?._id || req.projectId || req.params.projectId;
     const model = await CorrelationModel.create({
       organizationId: req.auth.organizationId,
-      projectId: req.params.projectId,
+      projectId,
       name: req.body.name || 'Untitled Correlation Flow',
       purpose: req.body.purpose || 'Correlation analysis flow',
       scope: req.body.scope || {},

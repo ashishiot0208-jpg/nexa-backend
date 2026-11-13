@@ -9,6 +9,7 @@ import {
   CorrelationModel,
   DerivedReading,
   Instrument,
+  SensorChannel,
   Device,
   DeviceTelemetry,
   ProjectGateway,
@@ -109,12 +110,29 @@ export async function executeBacktest(runId) {
         case 'Instrument': {
           const cfg = node.config || {};
           const field = cfg.field || 'value'; // 'value' | 'deltaFromBaseline' | 'ratePerHour'
-          const paramCode = cfg.parameterCode;
           const instId = cfg.instrumentId;
 
           let instDoc = null;
           if (instId && mongoose.Types.ObjectId.isValid(instId)) {
             instDoc = await Instrument.findById(instId).lean();
+          } else if (cfg.instrumentCode) {
+            instDoc = await Instrument.findOne({
+              projectId: run.projectId,
+              code: cfg.instrumentCode
+            }).lean();
+          }
+
+          // Canonical channel / parameterCode resolution:
+          // node.config.parameterCode -> fallback node.config.channelCode -> fallback lookup through channelId if required
+          let parameterCode = cfg.parameterCode || cfg.channelCode;
+          if (!parameterCode && cfg.channelId && mongoose.Types.ObjectId.isValid(cfg.channelId)) {
+            const channelDoc = await SensorChannel.findById(cfg.channelId).lean();
+            parameterCode = channelDoc?.parameterCode || channelDoc?.code;
+          }
+
+          const instLabel = instDoc?.code || cfg.instrumentCode || node.title || node.id;
+          if (!parameterCode) {
+            throw new Error(`Instrument node "${instLabel}" has no selected channel/parameter.`);
           }
 
           let query = {
@@ -122,8 +140,8 @@ export async function executeBacktest(runId) {
             observedAt: { $gte: startAt, $lte: endAt }
           };
 
-          if (instId) query.instrumentId = instDoc ? instDoc._id : instId;
-          if (paramCode) query.parameterCode = paramCode;
+          if (instDoc?._id || instId) query.instrumentId = instDoc ? instDoc._id : instId;
+          query.parameterCode = parameterCode;
 
           const readings = await DerivedReading.find(query)
             .sort({ observedAt: 1 })
@@ -143,7 +161,7 @@ export async function executeBacktest(runId) {
             instrumentId: instDoc?._id || instId,
             instrumentCode: instDoc?.code || cfg.instrumentCode || 'Instrument',
             instrumentName: instDoc?.name || 'Instrument',
-            parameterCode: paramCode,
+            parameterCode,
             field,
             unit: series[0]?.unit || '',
             series
@@ -152,7 +170,8 @@ export async function executeBacktest(runId) {
           nodeOutputs.set(node.id, outputData);
           nodeDiagnostics[node.id] = {
             nodeType: 'Instrument',
-            instrument: instDoc?.code,
+            instrument: instDoc?.code || cfg.instrumentCode,
+            parameterCode,
             field,
             samplesLoaded: series.length
           };
@@ -162,8 +181,13 @@ export async function executeBacktest(runId) {
         case 'Instrument Group': {
           const cfg = node.config || {};
           const groupType = cfg.groupType || 'MANUAL';
-          const paramCode = cfg.parameterCode;
+          let parameterCode = cfg.parameterCode || cfg.channelCode || cfg.parameter;
           const field = cfg.field || 'value';
+
+          const groupLabel = node.title || node.id;
+          if (!parameterCode) {
+            throw new Error(`Instrument Group node "${groupLabel}" has no selected parameter.`);
+          }
 
           const instFilter = { projectId: run.projectId };
 
@@ -184,9 +208,9 @@ export async function executeBacktest(runId) {
             const query = {
               projectId: run.projectId,
               instrumentId: inst._id,
-              observedAt: { $gte: startAt, $lte: endAt }
+              observedAt: { $gte: startAt, $lte: endAt },
+              parameterCode
             };
-            if (paramCode) query.parameterCode = paramCode;
 
             const readings = await DerivedReading.find(query)
               .sort({ observedAt: 1 })
@@ -218,6 +242,7 @@ export async function executeBacktest(runId) {
           nodeDiagnostics[node.id] = {
             nodeType: 'Instrument Group',
             groupType,
+            parameterCode,
             membersCount: membersData.length,
             totalSamples: membersData.reduce((acc, m) => acc + m.readings.length, 0)
           };

@@ -1,0 +1,77 @@
+{
+  "deviceCode": "SNRS485-2026-0002",
+  "apiKey": "gxn_test_key_snrs485_0002",
+  "gatewayCode": "GWLR-2026-0001",
+  "intervalMs": 10000,
+  "scenario": "NORMAL",
+  "health": {
+    "batteryV": 3.87,
+    "rssiDbm": -81,
+    "network": "LoRaWAN",
+    "internalTempC": 31.0,
+    "faultBits": []
+  },
+  "slots": [
+    {
+      "slot": 1,
+      "channels": [
+        {
+          "channelCode": "INCL-004-x_displacement",
+          "generator": {
+            "type": "gradual_rise",
+            "initial": 1.5,
+            "step": 0.15,
+            "max": 7.0
+          }
+        },
+        {
+          "channelCode": "INCL-004-y_displacement",
+          "generator": {
+            "type": "range",
+            "min": 0.8,
+            "max": 3.0
+          }
+        },
+        {
+          "channelCode": "INCL-004-temperature",
+          "generator": {
+            "type": "stable",
+            "baseline": 28.0,
+            "noise": 0.5
+          }
+        }
+      ]
+    },
+    {
+      "slot": 2,
+      "channels": [
+        {
+          "channelCode": "INCL-003-x_displacement",
+          "generator": {
+            "type": "gradual_rise",
+            "initial": 0.8,
+            "step": 0.1,
+            "max": 5.0
+          }
+        },
+        {
+          "channelCode": "INCL-003-y_displacement",
+          "generator": {
+            "type": "gradual_rise",
+            "initial": 0.4,
+            "step": 0.05,
+            "max": 3.0
+          }
+        },
+        {
+          "channelCode": "INCL-003-temperature",
+          "generator": {
+            "type": "stable",
+            "baseline": 27.5,
+            "noise": 0.4
+          }
+        }
+      ]
+    }
+  ]
+}
