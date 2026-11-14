@@ -134,7 +134,9 @@ export function evaluateCorrelation({
   minSamples = 20,
   qualityFilter = ['VALID'],
   labelA = 'Input A',
-  labelB = 'Input B'
+  labelB = 'Input B',
+  bucketMode = 'AUTO',
+  bucketMinutes = null
 }) {
   // 1. Evaluate baseline at 0 lag
   const baselineAligned = alignTimeSeries({
@@ -143,7 +145,9 @@ export function evaluateCorrelation({
     startAt,
     endAt,
     qualityFilter,
-    lagOffsetMs: 0
+    lagOffsetMs: 0,
+    bucketMode,
+    bucketMinutes
   });
 
   const r0 = calculatePearson(baselineAligned.alignedA, baselineAligned.alignedB);
@@ -155,13 +159,17 @@ export function evaluateCorrelation({
     const validR = hasEnoughSamples ? r0 : null;
     const descriptor = getRelationshipDescriptor(validR);
 
+    const relationshipText = validR !== null
+      ? `${labelA} and ${labelB} show a ${descriptor.label.toLowerCase()} relationship (r = ${validR.toFixed(4)}).`
+      : `Insufficient aligned samples between ${labelA} and ${labelB} to evaluate relationship.`;
+
     return {
       method: 'PEARSON',
       lagSearchPerformed: false,
       r: validR,
       rZeroLag: r0,
       bestLagHours: 0,
-      lagSemantics: formatLagSemantics(0, labelA, labelB),
+      lagSemantics: relationshipText,
       relationship: descriptor.label,
       strength: descriptor.strength,
       direction: descriptor.direction,
@@ -196,7 +204,9 @@ export function evaluateCorrelation({
       startAt,
       endAt,
       qualityFilter,
-      lagOffsetMs
+      lagOffsetMs,
+      bucketMode,
+      bucketMinutes
     });
 
     if (aligned.diagnostics.alignedSamples >= minSamples) {

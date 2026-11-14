@@ -21,10 +21,10 @@ import {
 } from '../src/services/correlation.service.js';
 import { SUPPORTED_NODE_TYPES, isPortConnectionValid } from '../src/services/correlation-engine/validation.js';
 
-console.log('=== STARTING CORRELATION STUDIO 9-NODE VERIFICATION ===\n');
+console.log('=== STARTING CORRELATION STUDIO 10-NODE VERIFICATION ===\n');
 
-// 1. PALETTE AUDIT (Exact 9 Nodes)
-console.log('Step 1: Verifying Palette Node Architecture (9 nodes)...');
+// 1. PALETTE AUDIT (Exact 10 Nodes)
+console.log('Step 1: Verifying Palette Node Architecture (10 nodes)...');
 const expectedNodes = [
   'Instrument',
   'Instrument Group',
@@ -34,19 +34,20 @@ const expectedNodes = [
   'Notification',
   'Correlation',
   'N-of-M',
+  'IF / ELSE',
   'Result'
 ];
 
 for (const type of expectedNodes) {
   assert.ok(SUPPORTED_NODE_TYPES[type], `Node type '${type}' must be in SUPPORTED_NODE_TYPES`);
 }
-assert.equal(Object.keys(SUPPORTED_NODE_TYPES).length, 9, 'Exactly 9 node types must be supported');
-console.log('✓ Step 1 Passed: Exactly 9 nodes registered in backend engine.');
+assert.equal(Object.keys(SUPPORTED_NODE_TYPES).length, 10, 'Exactly 10 node types must be supported');
+console.log('✓ Step 1 Passed: Exactly 10 nodes registered in backend engine.');
 
 // 2. CONNECTION COMPATIBILITY RULES
 console.log('\nStep 2: Verifying Connection Compatibility Rules...');
 
-// 8 Frozen Allowed connections
+// Allowed connections
 assert.equal(isPortConnectionValid('Instrument', 'series', 'Correlation', 'seriesA'), true, 'Instrument -> Correlation (seriesA) must be allowed');
 assert.equal(isPortConnectionValid('Instrument', 'series', 'Correlation', 'seriesB'), true, 'Instrument -> Correlation (seriesB) must be allowed');
 assert.equal(isPortConnectionValid('Device', 'series', 'Correlation', 'seriesA'), true, 'Device -> Correlation (seriesA) must be allowed');
@@ -58,12 +59,23 @@ assert.equal(isPortConnectionValid('Gateway', 'gatewayContext', 'Result', 'gatew
 assert.equal(isPortConnectionValid('Alarm', 'alarmContext', 'Result', 'alarmIn'), true, 'Alarm -> Result must be allowed');
 assert.equal(isPortConnectionValid('Notification', 'notificationContext', 'Result', 'notificationIn'), true, 'Notification -> Result must be allowed');
 
+// New Sequential & Branching connections
+assert.equal(isPortConnectionValid('Instrument', 'series', 'Device', 'instrumentIn'), true, 'Instrument -> Device must be allowed');
+assert.equal(isPortConnectionValid('Device', 'series', 'Gateway', 'deviceIn'), true, 'Device -> Gateway must be allowed');
+assert.equal(isPortConnectionValid('Correlation', 'correlationResult', 'IF / ELSE', 'conditionIn'), true, 'Correlation -> IF / ELSE must be allowed');
+assert.equal(isPortConnectionValid('N-of-M', 'nofmResult', 'IF / ELSE', 'conditionIn'), true, 'N-of-M -> IF / ELSE must be allowed');
+assert.equal(isPortConnectionValid('Instrument', 'series', 'IF / ELSE', 'conditionIn'), true, 'Instrument -> IF / ELSE must be allowed');
+assert.equal(isPortConnectionValid('Device', 'series', 'IF / ELSE', 'conditionIn'), true, 'Device -> IF / ELSE must be allowed');
+assert.equal(isPortConnectionValid('Gateway', 'gatewayContext', 'IF / ELSE', 'conditionIn'), true, 'Gateway -> IF / ELSE must be allowed');
+assert.equal(isPortConnectionValid('IF / ELSE', 'true', 'Result', 'conditionIn'), true, 'IF / ELSE (true) -> Result must be allowed');
+assert.equal(isPortConnectionValid('IF / ELSE', 'false', 'Result', 'conditionIn'), true, 'IF / ELSE (false) -> Result must be allowed');
+assert.equal(isPortConnectionValid('IF / ELSE', 'true', 'Alarm', 'conditionIn'), true, 'IF / ELSE (true) -> Alarm must be allowed');
+assert.equal(isPortConnectionValid('IF / ELSE', 'false', 'Alarm', 'conditionIn'), true, 'IF / ELSE (false) -> Alarm must be allowed');
+
 // Explicitly Rejected connections
 assert.equal(isPortConnectionValid('Instrument', 'series', 'N-of-M', 'groupIn'), false, 'Instrument -> N-of-M must be REJECTED');
 assert.equal(isPortConnectionValid('Instrument Group', 'group', 'Correlation', 'seriesA'), false, 'Instrument Group -> Correlation must be REJECTED');
 assert.equal(isPortConnectionValid('N-of-M', 'nofmResult', 'Correlation', 'seriesA'), false, 'N-of-M -> Correlation must be REJECTED');
-assert.equal(isPortConnectionValid('Device', 'series', 'Result', 'default'), false, 'Device -> Result must be REJECTED');
-assert.equal(isPortConnectionValid('Device', 'series', 'Result', 'correlationIn'), false, 'Device -> Result (correlationIn) must be REJECTED');
 assert.equal(isPortConnectionValid('Gateway', 'gatewayContext', 'Correlation', 'seriesA'), false, 'Gateway -> Correlation must be REJECTED');
 assert.equal(isPortConnectionValid('Gateway', 'gatewayContext', 'N-of-M', 'groupIn'), false, 'Gateway -> N-of-M must be REJECTED');
 assert.equal(isPortConnectionValid('Alarm', 'alarmContext', 'Correlation', 'seriesA'), false, 'Alarm -> Correlation must be REJECTED');

@@ -104,12 +104,18 @@ export function alignTimeSeries({
   startAt,
   endAt,
   qualityFilter = ['VALID'],
-  lagOffsetMs = 0
+  lagOffsetMs = 0,
+  bucketMode = 'AUTO',
+  bucketMinutes = null
 }) {
   const startTime = new Date(startAt).getTime();
   const endTime = new Date(endAt).getTime();
   const durationMs = Math.max(endTime - startTime, 3600 * 1000);
-  const bucketSizeMs = determineBucketSizeMs(durationMs, seriesA, seriesB);
+
+  const isManual = String(bucketMode || '').toUpperCase() === 'MANUAL' && Number(bucketMinutes) > 0;
+  const bucketSizeMs = isManual
+    ? Number(bucketMinutes) * 60 * 1000
+    : determineBucketSizeMs(durationMs, seriesA, seriesB);
 
   // Apply lag offset to seriesB if provided:
   // If B responds tau hours AFTER A (lagOffsetMs > 0), an event in B at (t + tau) corresponds to event in A at t.
@@ -171,6 +177,7 @@ export function alignTimeSeries({
       discardedSamplesA: discardedA,
       discardedSamplesB: discardedB,
       bucketDurationMinutes: Math.round(bucketSizeMs / (60 * 1000)),
+      bucketMode: isManual ? 'MANUAL' : 'AUTO',
       lagOffsetHours: Number((lagOffsetMs / (3600 * 1000)).toFixed(2))
     }
   };

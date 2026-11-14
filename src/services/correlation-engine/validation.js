@@ -7,13 +7,14 @@ import crypto from 'node:crypto';
 export const SUPPORTED_NODE_TYPES = {
   Instrument: { family: 'DATA', inputs: [], outputs: ['series'] },
   'Instrument Group': { family: 'DATA', inputs: [], outputs: ['group'] },
-  Device: { family: 'DATA', inputs: [], outputs: ['series'] },
-  Gateway: { family: 'CONTEXT', inputs: [], outputs: ['gatewayContext'] },
-  Alarm: { family: 'CONTEXT', inputs: [], outputs: ['alarmContext'] },
+  Device: { family: 'DATA', inputs: ['instrumentIn'], outputs: ['series'] },
+  Gateway: { family: 'CONTEXT', inputs: ['deviceIn'], outputs: ['gatewayContext'] },
+  Alarm: { family: 'CONTEXT', inputs: ['conditionIn'], outputs: ['alarmContext'] },
   Notification: { family: 'CONTEXT', inputs: [], outputs: ['notificationContext'] },
   Correlation: { family: 'ANALYSIS', inputs: ['seriesA', 'seriesB'], outputs: ['correlationResult'] },
   'N-of-M': { family: 'LOGIC', inputs: ['groupIn'], outputs: ['nofmResult'] },
-  Result: { family: 'OUTPUT', inputs: ['correlationIn', 'nofmIn', 'gatewayIn', 'alarmIn', 'notificationIn'], outputs: [] }
+  'IF / ELSE': { family: 'LOGIC', inputs: ['conditionIn'], outputs: ['true', 'false'] },
+  Result: { family: 'OUTPUT', inputs: ['correlationIn', 'nofmIn', 'gatewayIn', 'alarmIn', 'notificationIn', 'conditionIn'], outputs: [] }
 };
 
 /**
@@ -39,37 +40,62 @@ export const SUPPORTED_NODE_TYPES = {
 export function isPortConnectionValid(sourceType, sourcePort, targetType, targetPort) {
   // 1 & 2: Instrument or Device -> Correlation
   if ((sourceType === 'Instrument' || sourceType === 'Device') && (sourcePort === 'series' || sourcePort === 'default')) {
-    return targetType === 'Correlation' && (targetPort === 'seriesA' || targetPort === 'seriesB' || targetPort === 'default');
+    if (targetType === 'Correlation' && (targetPort === 'seriesA' || targetPort === 'seriesB' || targetPort === 'default')) return true;
   }
 
   // 3: Instrument Group -> N-of-M
   if (sourceType === 'Instrument Group' && (sourcePort === 'group' || sourcePort === 'default')) {
-    return targetType === 'N-of-M' && (targetPort === 'groupIn' || targetPort === 'default');
+    if (targetType === 'N-of-M' && (targetPort === 'groupIn' || targetPort === 'default')) return true;
   }
 
   // 4: Correlation -> Result
   if (sourceType === 'Correlation' && (sourcePort === 'correlationResult' || sourcePort === 'default')) {
-    return targetType === 'Result' && (targetPort === 'correlationIn' || targetPort === 'default');
+    if (targetType === 'Result' && (targetPort === 'correlationIn' || targetPort === 'default')) return true;
   }
 
   // 5: N-of-M -> Result
   if (sourceType === 'N-of-M' && (sourcePort === 'nofmResult' || sourcePort === 'default')) {
-    return targetType === 'Result' && (targetPort === 'nofmIn' || targetPort === 'default');
+    if (targetType === 'Result' && (targetPort === 'nofmIn' || targetPort === 'default')) return true;
   }
 
   // 6: Gateway -> Result
   if (sourceType === 'Gateway' && (sourcePort === 'gatewayContext' || sourcePort === 'default')) {
-    return targetType === 'Result' && (targetPort === 'gatewayIn' || targetPort === 'default');
+    if (targetType === 'Result' && (targetPort === 'gatewayIn' || targetPort === 'default')) return true;
   }
 
   // 7: Alarm -> Result
   if (sourceType === 'Alarm' && (sourcePort === 'alarmContext' || sourcePort === 'default')) {
-    return targetType === 'Result' && (targetPort === 'alarmIn' || targetPort === 'default');
+    if (targetType === 'Result' && (targetPort === 'alarmIn' || targetPort === 'default')) return true;
   }
 
   // 8: Notification -> Result
   if (sourceType === 'Notification' && (sourcePort === 'notificationContext' || sourcePort === 'default')) {
-    return targetType === 'Result' && (targetPort === 'notificationIn' || targetPort === 'default');
+    if (targetType === 'Result' && (targetPort === 'notificationIn' || targetPort === 'default')) return true;
+  }
+
+  // 9: Instrument -> Device (physical commissioning association)
+  if (sourceType === 'Instrument' && (sourcePort === 'series' || sourcePort === 'default')) {
+    if (targetType === 'Device' && (targetPort === 'instrumentIn' || targetPort === 'default')) return true;
+  }
+
+  // 10: Device -> Gateway (device to gateway infrastructure mapping)
+  if (sourceType === 'Device' && (sourcePort === 'series' || sourcePort === 'default')) {
+    if (targetType === 'Gateway' && (targetPort === 'deviceIn' || targetPort === 'default')) return true;
+  }
+
+  // 11: Correlation / N-of-M / Instrument / Device / Gateway -> IF / ELSE
+  if ((sourceType === 'Correlation' || sourceType === 'N-of-M' || sourceType === 'Instrument' || sourceType === 'Device' || sourceType === 'Gateway')) {
+    if (targetType === 'IF / ELSE' && (targetPort === 'conditionIn' || targetPort === 'default')) return true;
+  }
+
+  // 12: IF / ELSE (true or false) -> Result
+  if (sourceType === 'IF / ELSE' && (sourcePort === 'true' || sourcePort === 'false' || sourcePort === 'default')) {
+    if (targetType === 'Result' && (targetPort === 'conditionIn' || targetPort === 'default')) return true;
+  }
+
+  // 13: IF / ELSE (true or false) -> Alarm
+  if (sourceType === 'IF / ELSE' && (sourcePort === 'true' || sourcePort === 'false' || sourcePort === 'default')) {
+    if (targetType === 'Alarm' && (targetPort === 'conditionIn' || targetPort === 'default')) return true;
   }
 
   return false;

@@ -21,6 +21,35 @@ import { validateGraph } from './validation.js';
 import { evaluateCorrelation } from './relationship.js';
 import { evaluateNofM } from './nofm.js';
 
+function formatSeriesLabel(instrumentCode, parameterCode) {
+  if (instrumentCode && parameterCode) {
+    return `${instrumentCode} · ${parameterCode}`;
+  }
+  return parameterCode || instrumentCode || 'Series';
+}
+
+function formatParameterIdentity(inputA, inputB, isA = true) {
+  const current = isA ? inputA : inputB;
+  const other = isA ? inputB : inputA;
+  if (!current) return isA ? 'Input A' : 'Input B';
+
+  const inst = current.instrumentCode;
+  const param = current.parameterCode;
+
+  if (param && inst) {
+    // When both inputs belong to the same instrument (e.g. INC-2026-0001 / x_displacement vs y_displacement)
+    if (other && other.instrumentCode === inst && other.parameterCode !== param) {
+      return param;
+    }
+    // When different instruments have the exact same parameter code
+    if (other && other.instrumentCode !== inst && other.parameterCode === param) {
+      return `${inst} (${param})`;
+    }
+    return param;
+  }
+  return param || inst || (isA ? 'Input A' : 'Input B');
+}
+
 /**
  * Topologically sorts nodes using Kahn's algorithm.
  * @param {Array} nodes
@@ -101,10 +130,30 @@ export async function executeBacktest(runId) {
 
     const nodeOutputs = new Map();
     const nodeDiagnostics = {};
+    const inactiveEdges = new Set();
+    const inactiveNodes = new Set();
+
+    const getEdgeKey = (e) => `${e.sourceNodeId || e.source}:${e.sourcePort || 'default'}->${e.targetNodeId || e.target}:${e.targetPort || 'default'}`;
 
     for (let i = 0; i < sortedNodes.length; i++) {
       const node = sortedNodes[i];
       const incomingEdges = edges.filter(e => (e.targetNodeId || e.target) === node.id);
+
+      // Inactive Branch Propagation:
+      // If a node has incoming connections and all of them are inactive, mark this node inactive.
+      if (incomingEdges.length > 0 && incomingEdges.every(e => inactiveEdges.has(getEdgeKey(e)))) {
+        inactiveNodes.add(node.id);
+        const outgoing = edges.filter(e => (e.sourceNodeId || e.source) === node.id);
+        for (const outE of outgoing) {
+          inactiveEdges.add(getEdgeKey(outE));
+        }
+        nodeDiagnostics[node.id] = {
+          nodeType: node.type,
+          inactive: true,
+          reason: 'All upstream incoming branches were inactive'
+        };
+        continue;
+      }
 
       switch (node.type) {
         case 'Instrument': {
@@ -254,6 +303,10 @@ export async function executeBacktest(runId) {
           const metric = cfg.metric || 'batteryV'; // 'batteryV' | 'rssiDbm' | 'internalTempC'
           const devId = cfg.deviceId;
 
+          // Check if connected from upstream Instrument (context association)
+          const instEdge = incomingEdges.find(e => !inactiveEdges.has(getEdgeKey(e)) && (e.targetPort || 'instrumentIn') === 'instrumentIn');
+          const instInput = instEdge ? nodeOutputs.get(instEdge.sourceNodeId || instEdge.source) : null;
+
           let devDoc = null;
           if (devId && mongoose.Types.ObjectId.isValid(devId)) {
             devDoc = await Device.findById(devId).lean();
@@ -262,9 +315,30 @@ export async function executeBacktest(runId) {
               projectId: run.projectId,
               $or: [{ deviceId: devId }, { devEui: devId }]
             }).lean();
+          } else if (instInput?.instrumentId) {
+            // Read-only lookup of mapped device through SensorChannel
+            const channelDoc = await SensorChannel.findOne({
+              projectId: run.projectId,
+              instrumentId: instInput.instrumentId,
+              deviceId: { $ne: null }
+            }).lean();
+            if (channelDoc?.deviceId) {
+              devDoc = await Device.findById(channelDoc.deviceId).lean();
+            }
           }
 
           const targetDeviceId = devDoc ? devDoc._id : (mongoose.Types.ObjectId.isValid(devId) ? devId : null);
+
+          // Verify physical commissioning mapping (read-only validation)
+          let isCommissionedMapping = false;
+          if (instInput?.instrumentId && targetDeviceId) {
+            const channelMapping = await SensorChannel.findOne({
+              projectId: run.projectId,
+              instrumentId: instInput.instrumentId,
+              deviceId: targetDeviceId
+            }).lean();
+            isCommissionedMapping = !!channelMapping;
+          }
 
           let query = {
             projectId: run.projectId,
@@ -330,6 +404,10 @@ export async function executeBacktest(runId) {
           const cfg = node.config || {};
           const gwId = cfg.gatewayId;
 
+          // Check if connected from upstream Device (infrastructure mapping)
+          const devEdge = incomingEdges.find(e => !inactiveEdges.has(getEdgeKey(e)) && (e.targetPort || 'deviceIn') === 'deviceIn');
+          const devInput = devEdge ? nodeOutputs.get(devEdge.sourceNodeId || devEdge.source) : null;
+
           let gwDoc = null;
           if (gwId && mongoose.Types.ObjectId.isValid(gwId)) {
             gwDoc = await ProjectGateway.findById(gwId).lean();
@@ -338,15 +416,40 @@ export async function executeBacktest(runId) {
               projectId: run.projectId,
               $or: [{ gatewayId: gwId }, { gateway_uid: gwId }]
             }).lean();
+          } else if (devInput?.deviceId) {
+            // Read-only lookup of mapped gateway through DeviceGatewayMapping
+            const mappingDoc = await DeviceGatewayMapping.findOne({
+              projectId: run.projectId,
+              status: 'ACTIVE'
+            }).lean();
+            if (mappingDoc?.gatewayAssetId) {
+              gwDoc = await ProjectGateway.findById(mappingDoc.gatewayAssetId).lean();
+            }
           }
 
           let connectedCount = 0;
+          let isCommissionedMapping = false;
           if (gwDoc?._id) {
             connectedCount = await DeviceGatewayMapping.countDocuments({
               projectId: run.projectId,
               gatewayAssetId: gwDoc._id,
               status: 'ACTIVE'
             });
+            if (devInput?.deviceId) {
+              const devDoc = await Device.findOne({
+                projectId: run.projectId,
+                $or: [{ deviceId: devInput.deviceId }, { _id: mongoose.Types.ObjectId.isValid(devInput.deviceId) ? devInput.deviceId : undefined }]
+              }).lean();
+              if (devDoc?._id) {
+                const mapCheck = await DeviceGatewayMapping.findOne({
+                  projectId: run.projectId,
+                  gatewayAssetId: gwDoc._id,
+                  deviceAssetId: devDoc._id,
+                  status: 'ACTIVE'
+                }).lean();
+                isCommissionedMapping = !!mapCheck;
+              }
+            }
           }
 
           const outputData = {
@@ -548,6 +651,13 @@ export async function executeBacktest(runId) {
           const seriesA = inputA?.series || [];
           const seriesB = inputB?.series || [];
 
+          const bucketMode = (cfg.bucketMode || 'AUTO').toUpperCase();
+          const bucketMinutes = bucketMode === 'MANUAL' && Number(cfg.bucketMinutes) > 0 ? Number(cfg.bucketMinutes) : null;
+
+          // Resolve parameter identities for clear relationship labeling
+          const identityA = formatParameterIdentity(inputA, inputB, true);
+          const identityB = formatParameterIdentity(inputA, inputB, false);
+
           const corrResult = evaluateCorrelation({
             seriesA,
             seriesB,
@@ -558,8 +668,10 @@ export async function executeBacktest(runId) {
             lagStepHours: Number(cfg.lagStepHours) || 1,
             minSamples: Number(cfg.minSamples) || 20,
             qualityFilter: Array.isArray(cfg.qualityFilter) && cfg.qualityFilter.length ? cfg.qualityFilter : ['VALID'],
-            labelA: inputA?.instrumentCode || 'Input A',
-            labelB: inputB?.instrumentCode || 'Input B'
+            labelA: identityA,
+            labelB: identityB,
+            bucketMode,
+            bucketMinutes
           });
 
           const outputData = {
@@ -576,7 +688,9 @@ export async function executeBacktest(runId) {
             lagSearch: cfg.lagSearch === true,
             r: corrResult.r,
             bestLagHours: corrResult.bestLagHours,
-            samples: corrResult.samples
+            samples: corrResult.samples,
+            bucketMode: corrResult.diagnostics?.bucketMode || 'AUTO',
+            bucketMinutes: corrResult.diagnostics?.bucketDurationMinutes
           };
           break;
         }
@@ -614,18 +728,172 @@ export async function executeBacktest(runId) {
           break;
         }
 
-        case 'Result': {
-          const corrEdge = incomingEdges.find(e => (e.targetPort || 'correlationIn') === 'correlationIn');
-          const nofmEdge = incomingEdges.find(e => (e.targetPort || 'nofmIn') === 'nofmIn');
-          const gwEdge = incomingEdges.find(e => (e.targetPort || 'gatewayIn') === 'gatewayIn');
-          const alarmEdge = incomingEdges.find(e => (e.targetPort || 'alarmIn') === 'alarmIn');
-          const notifEdge = incomingEdges.find(e => (e.targetPort || 'notificationIn') === 'notificationIn');
+        case 'IF / ELSE': {
+          const cfg = node.config || {};
+          let actualValue = null;
 
-          const corrInput = corrEdge ? nodeOutputs.get(corrEdge.sourceNodeId || corrEdge.source) : null;
+          // Determine input source
+          let sourceOutput = null;
+          let inEdge = null;
+          if (cfg.source) {
+            sourceOutput = nodeOutputs.get(cfg.source);
+            inEdge = incomingEdges.find(e => (e.sourceNodeId || e.source) === cfg.source);
+          }
+          if (!sourceOutput) {
+            inEdge = incomingEdges.find(e => !inactiveEdges.has(getEdgeKey(e)));
+            if (inEdge) {
+              sourceOutput = nodeOutputs.get(inEdge.sourceNodeId || inEdge.source);
+            }
+          }
+
+          if (sourceOutput) {
+            const rawField = (cfg.field || '').trim().toLowerCase();
+            if (sourceOutput.type === 'CORRELATION_RESULT') {
+              if (rawField === 'bestlaghours' || rawField.includes('lag')) {
+                actualValue = sourceOutput.result?.bestLagHours;
+              } else if (rawField === 'samples') {
+                actualValue = sourceOutput.result?.samples;
+              } else {
+                // Default: Pearson r
+                actualValue = sourceOutput.result?.r;
+              }
+            } else if (sourceOutput.type === 'SERIES') {
+              if (sourceOutput.series && sourceOutput.series.length) {
+                const last = sourceOutput.series[sourceOutput.series.length - 1];
+                actualValue = last.value;
+              }
+            } else if (sourceOutput.type === 'GATEWAY_CONTEXT') {
+              if (rawField === 'status') actualValue = sourceOutput.status;
+              else actualValue = sourceOutput.connectedDeviceCount;
+            } else if (sourceOutput.type === 'NOFM_RESULT') {
+              if (rawField === 'passed' || rawField === 'status') {
+                actualValue = sourceOutput.result?.passed ? 1 : 0;
+              } else {
+                actualValue = sourceOutput.result?.confirmedCount;
+              }
+            } else {
+              actualValue = sourceOutput.value ?? null;
+            }
+          }
+
+          const operator = cfg.operator || '>=';
+          const targetVal = (cfg.value !== undefined && cfg.value !== null && cfg.value !== '') ? cfg.value : 0.8;
+          const numActual = (actualValue !== null && actualValue !== undefined && !isNaN(Number(actualValue))) ? Number(actualValue) : null;
+          const numTarget = (targetVal !== null && targetVal !== undefined && !isNaN(Number(targetVal))) ? Number(targetVal) : null;
+
+          let isTrue = false;
+          if (numActual !== null && numTarget !== null) {
+            switch (operator) {
+              case '>': isTrue = numActual > numTarget; break;
+              case '>=': isTrue = numActual >= numTarget; break;
+              case '<': isTrue = numActual < numTarget; break;
+              case '<=': isTrue = numActual <= numTarget; break;
+              case '==': isTrue = numActual === numTarget; break;
+              case '!=': isTrue = numActual !== numTarget; break;
+              default: isTrue = false; break;
+            }
+          } else {
+            switch (operator) {
+              case '==': isTrue = String(actualValue) === String(targetVal); break;
+              case '!=': isTrue = String(actualValue) !== String(targetVal); break;
+              case '>': isTrue = String(actualValue) > String(targetVal); break;
+              case '>=': isTrue = String(actualValue) >= String(targetVal); break;
+              case '<': isTrue = String(actualValue) < String(targetVal); break;
+              case '<=': isTrue = String(actualValue) <= String(targetVal); break;
+              default: isTrue = false; break;
+            }
+          }
+
+          const activeBranch = isTrue ? 'TRUE' : 'FALSE';
+          const fieldDisplay = cfg.field || (sourceOutput?.type === 'CORRELATION_RESULT' ? 'Pearson r' : 'value');
+          const conditionStr = `${fieldDisplay} ${operator} ${targetVal}`;
+
+          // Gating: Outgoing edges from inactive branch become inactive
+          const outgoing = edges.filter(e => (e.sourceNodeId || e.source) === node.id);
+          for (const outE of outgoing) {
+            const port = (outE.sourcePort || '').toLowerCase();
+            if (isTrue && port === 'false') {
+              inactiveEdges.add(getEdgeKey(outE));
+            } else if (!isTrue && (port === 'true' || port === 'default')) {
+              inactiveEdges.add(getEdgeKey(outE));
+            }
+          }
+
+          const outputData = {
+            type: 'IF_ELSE_DECISION',
+            nodeType: 'IF / ELSE',
+            nodeId: node.id,
+            condition: conditionStr,
+            field: fieldDisplay,
+            operator,
+            targetValue: numTarget !== null ? numTarget : targetVal,
+            actualValue: numActual !== null ? numActual : actualValue,
+            result: isTrue,
+            decision: activeBranch,
+            activeBranch,
+            sourceNodeId: inEdge ? (inEdge.sourceNodeId || inEdge.source) : null
+          };
+
+          nodeOutputs.set(node.id, outputData);
+          nodeDiagnostics[node.id] = {
+            nodeType: 'IF / ELSE',
+            condition: conditionStr,
+            actualValue: numActual !== null ? numActual : actualValue,
+            result: isTrue,
+            activeBranch
+          };
+          break;
+        }
+
+        case 'Result': {
+          const activeIncoming = incomingEdges.filter(e => !inactiveEdges.has(getEdgeKey(e)));
+
+          const corrEdge = activeIncoming.find(e => (e.targetPort || 'correlationIn') === 'correlationIn');
+          const nofmEdge = activeIncoming.find(e => (e.targetPort || 'nofmIn') === 'nofmIn');
+          const gwEdge = activeIncoming.find(e => (e.targetPort || 'gatewayIn') === 'gatewayIn');
+          const alarmEdge = activeIncoming.find(e => (e.targetPort || 'alarmIn') === 'alarmIn');
+          const notifEdge = activeIncoming.find(e => (e.targetPort || 'notificationIn') === 'notificationIn');
+          const ifElseEdge = activeIncoming.find(e => (e.targetPort || 'conditionIn') === 'conditionIn');
+
+          let corrInput = corrEdge ? nodeOutputs.get(corrEdge.sourceNodeId || corrEdge.source) : null;
           const nofmInput = nofmEdge ? nodeOutputs.get(nofmEdge.sourceNodeId || nofmEdge.source) : null;
           const gwInput = gwEdge ? nodeOutputs.get(gwEdge.sourceNodeId || gwEdge.source) : null;
           const alarmInput = alarmEdge ? nodeOutputs.get(alarmEdge.sourceNodeId || alarmEdge.source) : null;
           const notifInput = notifEdge ? nodeOutputs.get(notifEdge.sourceNodeId || notifEdge.source) : null;
+
+          // Check for evaluated IF / ELSE node in the active graph
+          let ifElseDecision = null;
+          for (const n of sortedNodes) {
+            if (n.type === 'IF / ELSE' && !inactiveNodes.has(n.id)) {
+              const ifOut = nodeOutputs.get(n.id);
+              if (ifOut) {
+                let activePath = ifOut.result ? 'TRUE → Result' : 'FALSE → Result';
+                if (!ifOut.result && alarmInput) {
+                  activePath = 'FALSE → Alarm Evidence → Result';
+                }
+                ifElseDecision = {
+                  condition: ifOut.condition,
+                  field: ifOut.field,
+                  operator: ifOut.operator,
+                  targetValue: ifOut.targetValue,
+                  actualValue: ifOut.actualValue,
+                  result: ifOut.result,
+                  decision: ifOut.decision,
+                  activeBranch: ifOut.activeBranch,
+                  activePath
+                };
+
+                // Propagate Correlation evidence to Result if Correlation was upstream of IF / ELSE
+                if (!corrInput && ifOut.sourceNodeId) {
+                  const srcOut = nodeOutputs.get(ifOut.sourceNodeId);
+                  if (srcOut?.type === 'CORRELATION_RESULT') {
+                    corrInput = srcOut;
+                  }
+                }
+                break;
+              }
+            }
+          }
 
           // Check if any Device node was input to Correlation
           let devInput = null;
@@ -651,6 +919,8 @@ export async function executeBacktest(runId) {
             hasAlarm: !!alarmInput,
             hasNotification: !!notifInput,
             hasDevice: !!devInput,
+            hasIfElse: !!ifElseDecision,
+            ifElse: ifElseDecision,
             correlation: corrInput ? {
               inputA: corrInput.inputA,
               inputB: corrInput.inputB,
@@ -723,13 +993,16 @@ export async function executeBacktest(runId) {
             const valsB = corrInput.result.alignedValuesB;
             const step = Math.max(1, Math.floor(timestamps.length / 400));
 
+            const seriesLabelA = formatSeriesLabel(corrInput.inputA?.instrumentCode, corrInput.inputA?.parameterCode);
+            const seriesLabelB = formatSeriesLabel(corrInput.inputB?.instrumentCode, corrInput.inputB?.parameterCode);
+
             for (let idx = 0; idx < timestamps.length; idx += step) {
               timeline.push({
                 time: timestamps[idx],
                 valueA: valsA[idx],
                 valueB: valsB[idx],
-                labelA: corrInput.inputA?.instrumentCode || 'Series A',
-                labelB: corrInput.inputB?.instrumentCode || 'Series B',
+                labelA: seriesLabelA,
+                labelB: seriesLabelB,
                 unitA: corrInput.inputA?.unit || '',
                 unitB: corrInput.inputB?.unit || ''
               });
